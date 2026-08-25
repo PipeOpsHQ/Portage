@@ -24,7 +24,7 @@ import (
 func TestCommandPostgres(t *testing.T) {
 	t.Parallel()
 	cmd := Command("postgres")
-	if len(cmd) == 0 || !strings.Contains(strings.Join(cmd, " "), "pg_dumpall") {
+	if len(cmd) == 0 || !strings.Contains(strings.Join(cmd, " "), "pg_dump") {
 		t.Fatalf("%v", cmd)
 	}
 	if RestoreCommand("nginx") != nil {

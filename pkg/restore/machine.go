@@ -95,7 +95,11 @@ func Advance(status portagev1alpha1.ActionStatus, facts Facts) Result {
 		if pending := waiting(workloads, func(w portagev1alpha1.WorkloadActionStatus) bool {
 			return w.Class == portagev1alpha1.ClassStateless || facts.Rehydrated[w.Key]
 		}); pending != "" {
-			return Result{Phase: portagev1alpha1.ActionPhaseRehydrating, Message: "rehydrating " + pending, Workloads: workloads, RequeueAfter: 5 * time.Second}
+			msg := "rehydrating " + pending
+			if m := facts.UsefulMessage[pending]; m != "" {
+				msg += ": " + m
+			}
+			return Result{Phase: portagev1alpha1.ActionPhaseRehydrating, Message: msg, Workloads: workloads, RequeueAfter: 5 * time.Second}
 		}
 		return Result{Phase: portagev1alpha1.ActionPhaseWaitingReady, Message: "data restored; waiting for Ready + probe", Workloads: workloads, RequeueAfter: 2 * time.Second}
 
@@ -198,6 +202,11 @@ func applyFacts(workloads []portagev1alpha1.WorkloadActionStatus, facts Facts) {
 		if facts.Healed != nil {
 			if h := facts.Healed[w.Key]; len(h) > 0 {
 				w.Healed = append(w.Healed[:0], h...)
+			}
+		}
+		if facts.UsefulMessage != nil {
+			if m := facts.UsefulMessage[w.Key]; m != "" {
+				w.Message = m
 			}
 		}
 		if w.Class == portagev1alpha1.ClassStateless && w.Ready {
