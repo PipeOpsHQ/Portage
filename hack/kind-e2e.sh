@@ -170,6 +170,7 @@ for _ in $(seq 1 40); do
 done
 if [[ "$found" != "1" ]]; then
   echo "dest cluster missing applied STS" >&2
+  kubectl --context "$SRC_CTX" -n pg get policy pg -o yaml || true
   kubectl --context "$SRC_CTX" get clusterpair kind-pair -o yaml || true
   kubectl --context "$SRC_CTX" -n pg get action restore-pg -o yaml || true
   kubectl --context "$SRC_CTX" -n pg get sts pg -o name || true

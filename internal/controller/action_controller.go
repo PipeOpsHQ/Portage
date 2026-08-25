@@ -144,7 +144,10 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, act, "policy: "+err.Error())
 	}
 
-	pair := r.loadPair(ctx, pol)
+	pair, err := r.loadPair(ctx, pol)
+	if err != nil {
+		return r.fail(ctx, act, err.Error())
+	}
 	ep := r.endpoints(ctx, pair)
 	if ep.Source.Kube == nil {
 		ep.Source.Kube, ep.Source.Dynamic, ep.Source.Exec = r.Kube, r.Dynamic, r.Exec
@@ -180,6 +183,9 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if pair != nil && ep.Dest.Name != "" {
+		res.Message = strings.TrimSpace(res.Message + "; dest=" + ep.Dest.Name)
 	}
 
 	act.Status.Phase = res.Phase
@@ -290,7 +296,9 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			}
 			rendered = append(rendered, out...)
 		}
-		_ = apply.Typed(ctx, ep.Dest.Kube, rendered)
+		if err := apply.Typed(ctx, ep.Dest.Kube, rendered); err != nil {
+			return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: "dest apply: " + err.Error(), Terminal: true}, nil
+		}
 	}
 	for _, w := range inv.Workloads {
 		if a, ok := artByKey[w.Key()]; ok {
@@ -525,15 +533,15 @@ func (r *ActionReconciler) healWorkloadOn(ctx context.Context, kube kubernetes.I
 	}
 }
 
-func (r *ActionReconciler) loadPair(ctx context.Context, pol *portagev1alpha1.Policy) *portagev1alpha1.ClusterPair {
+func (r *ActionReconciler) loadPair(ctx context.Context, pol *portagev1alpha1.Policy) (*portagev1alpha1.ClusterPair, error) {
 	if pol.Spec.ClusterPair == "" {
-		return nil
+		return nil, nil
 	}
 	pair := &portagev1alpha1.ClusterPair{}
 	if err := r.Get(ctx, types.NamespacedName{Name: pol.Spec.ClusterPair}, pair); err != nil {
-		return nil
+		return nil, fmt.Errorf("clusterpair %s: %w", pol.Spec.ClusterPair, err)
 	}
-	return pair
+	return pair, nil
 }
 
 func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep clusters.Pair) *movers.Registry {
