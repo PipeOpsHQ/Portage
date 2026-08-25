@@ -1,0 +1,38 @@
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: backup-tenant-a
+  namespace: tenant-a
+spec:
+  type: Backup
+  policyRef: tenant-continuity
+---
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: replicate-tenant-a
+  namespace: tenant-a
+spec:
+  type: Replicate
+  policyRef: tenant-continuity
+---
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: restore-tenant-a
+  namespace: tenant-a
+spec:
+  type: Restore
+  policyRef: tenant-continuity
+  # snapshotID: optional pin
+  dryRun: true
+---
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: cutover-to-cloud-b
+  namespace: tenant-a
+spec:
+  type: Cutover
+  policyRef: tenant-continuity
+  freezeTimeout: 10m

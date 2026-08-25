@@ -1,0 +1,27 @@
+apiVersion: portage.io/v1alpha1
+kind: Policy
+metadata:
+  name: tenant-continuity
+  namespace: tenant-a
+spec:
+  # empty clusterPair = in-cluster (classify + backup on this cluster)
+  selector:
+    namespaces:
+      - tenant-a
+  backup:
+    enabled: true
+    rpo: 24h
+    requireUseful: true
+  restore:
+    auto: false # set true to recreate missing PVCs from useful artifacts
+    neverOverwriteNewer: true
+  renderer:
+    kind: Sanitize
+  # replicate + cutover require a ClusterPair
+  # clusterPair: cloud-a-to-cloud-b
+  # replicate:
+  #   enabled: true
+  #   rpo: 15m
+  # cutover:
+  #   trafficHook: https://hooks.example.com/portage/switch
+  #   holdSource: 24h

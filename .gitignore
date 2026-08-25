@@ -1,0 +1,13 @@
+bin/
+dist/
+cover.out
+coverage.out
+*.test
+.idea/
+.vscode/
+*.swp
+.DS_Store
+vendor/
+.env
+*.kubeconfig
+/tmp/

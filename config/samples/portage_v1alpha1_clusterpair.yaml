@@ -1,0 +1,19 @@
+apiVersion: portage.io/v1alpha1
+kind: ClusterPair
+metadata:
+  name: cloud-a-to-cloud-b
+spec:
+  source:
+    name: cloud-a
+    # kubeconfigSecret:
+    #   name: cloud-a-kubeconfig
+    #   key: kubeconfig
+  destination:
+    name: cloud-b
+    kubeconfigSecret:
+      name: cloud-b-kubeconfig
+      key: kubeconfig
+  transport: ObjectStore
+  storageClassMap:
+    gp3: standard-csi
+    premium-rwo: pd-balanced
