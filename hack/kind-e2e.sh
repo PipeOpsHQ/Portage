@@ -138,8 +138,9 @@ EOF
 
 mkdir -p "$STORE"
 kind get kubeconfig --name "$SRC" > /tmp/portage-src.kubeconfig
-export KUBECONFIG=/tmp/portage-src.kubeconfig
-PORTAGE_STORE_DIR="$STORE" /tmp/portage-controller \
+# Do not export KUBECONFIG: a src-only file drops the dest context and the
+# e2e dest STS check then fails even when Restore applied it.
+PORTAGE_STORE_DIR="$STORE" KUBECONFIG=/tmp/portage-src.kubeconfig /tmp/portage-controller \
   --leader-elect=false \
   --metrics-bind-address=:18080 \
   --health-probe-bind-address=:18081 \
