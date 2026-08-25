@@ -101,7 +101,15 @@ func Advance(status portagev1alpha1.ActionStatus, facts Facts) Result {
 			}
 			return Result{Phase: portagev1alpha1.ActionPhaseRehydrating, Message: msg, Workloads: workloads, RequeueAfter: 5 * time.Second}
 		}
-		return Result{Phase: portagev1alpha1.ActionPhaseWaitingReady, Message: "data restored; waiting for Ready + probe", Workloads: workloads, RequeueAfter: 2 * time.Second}
+		if pending := waiting(workloads, func(w portagev1alpha1.WorkloadActionStatus) bool { return w.Ready }); pending != "" {
+			return Result{Phase: portagev1alpha1.ActionPhaseWaitingReady, Message: pending + " is not Ready", Workloads: workloads, RequeueAfter: 5 * time.Second}
+		}
+		if pending := waiting(workloads, func(w portagev1alpha1.WorkloadActionStatus) bool {
+			return w.Class == portagev1alpha1.ClassStateless || w.ProbeOK
+		}); pending != "" {
+			return Result{Phase: portagev1alpha1.ActionPhaseWaitingReady, Message: pending + " class probe has not passed", Workloads: workloads, RequeueAfter: 5 * time.Second}
+		}
+		return attest(workloads, facts.Now)
 
 	case portagev1alpha1.ActionPhaseWaitingReady, portagev1alpha1.ActionPhaseHealing:
 		if pending := waiting(workloads, func(w portagev1alpha1.WorkloadActionStatus) bool { return w.Ready }); pending != "" {
