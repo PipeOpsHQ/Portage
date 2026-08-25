@@ -68,10 +68,28 @@ spec:
           env:
             - { name: POSTGRES_PASSWORD, value: portage }
           ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 2
 EOF
 
 kubectl --context "$SRC_CTX" -n pg rollout status sts/pg --timeout=180s
 kubectl --context "$SRC_CTX" -n pg wait pod/pg-0 --for=condition=Ready --timeout=180s
+# Container Ready can still race initdb; wait until psql actually works.
+ok=0
+for _ in $(seq 1 30); do
+  if kubectl --context "$SRC_CTX" -n pg exec pg-0 -- psql -U postgres -c "SELECT 1" >/dev/null 2>&1; then
+    ok=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$ok" != "1" ]]; then
+  echo "postgres never accepted connections" >&2
+  kubectl --context "$SRC_CTX" -n pg logs pg-0 || true
+  exit 1
+fi
 # >64KiB so usefulness-gated backup can Succeeded.
 kubectl --context "$SRC_CTX" -n pg exec pg-0 -- \
   psql -U postgres -c "CREATE TABLE blob AS SELECT repeat('x', 8192) FROM generate_series(1,32);"
