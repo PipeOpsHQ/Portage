@@ -28,6 +28,8 @@ import (
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
 	"github.com/PipeOpsHQ/portage/pkg/movers"
 	"github.com/PipeOpsHQ/portage/pkg/workloads"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -39,7 +41,8 @@ var ReplicaLagCmd = []string{"/bin/sh", "-c", `psql -U postgres -tAc "SELECT COA
 
 // Mover uses in-pod psql/pg_ctl. VolSync is the fallback for generic PVCs.
 type Mover struct {
-	Kube kubernetes.Interface
+	Kube kubernetes.Interface // source
+	Dest kubernetes.Interface // dest; nil ⇒ dest is Kube
 	Exec kubeexec.Interface
 }
 
@@ -60,9 +63,49 @@ func (m Mover) Backup(context.Context, classify.Workload, movers.ClusterHandle) 
 	return movers.Artifact{Mover: m.Name(), Message: "use logical dump + CSI for backup"}, nil
 }
 
-func (m Mover) Replicate(context.Context, classify.Workload, movers.ClusterHandle, movers.ClusterHandle) error {
-	// Dest standby is provisioned by the renderer; we only promote/quiesce here.
-	return nil
+func (m Mover) Replicate(ctx context.Context, w classify.Workload, src, dst movers.ClusterHandle) error {
+	dest := m.Dest
+	if dest == nil {
+		dest = m.Kube
+	}
+	if dest == nil {
+		return fmt.Errorf("postgres-streaming: dest kube required")
+	}
+	host := src.Name
+	if host == "" {
+		host = w.Name
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "portage-standby-" + w.Name,
+			Namespace: w.Namespace,
+			Labels:    map[string]string{"portage.io/name": w.Name, "portage.io/role": "standby"},
+		},
+		Data: map[string]string{
+			"primary_conninfo": fmt.Sprintf("host=%s user=postgres application_name=portage", host),
+			"primary_cluster":  dst.Name,
+			"hot_standby":      "on",
+		},
+	}
+	_, err := dest.CoreV1().ConfigMaps(w.Namespace).Create(ctx, cm, metav1.CreateOptions{})
+	if err != nil {
+		_, err = dest.CoreV1().ConfigMaps(w.Namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return err
+	}
+	if err := m.ensurePrimaryService(ctx, w); err != nil {
+		return err
+	}
+	_ = m.ensureReplicatorRole(ctx, w)
+	primary := svcName + "." + w.Namespace + ".svc"
+	if src.Name != "" && src.Name != "local" && src.Name != "source" {
+		primary = src.Name
+	}
+	if err := m.ensureBasebackupJob(ctx, w, primary); err != nil {
+		return err
+	}
+	return m.patchDestStandby(ctx, w)
 }
 
 func (m Mover) Restore(context.Context, classify.Workload, movers.Artifact, movers.ClusterHandle) error {

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -31,16 +32,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
+	"github.com/PipeOpsHQ/portage/pkg/apply"
 	"github.com/PipeOpsHQ/portage/pkg/backup"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 	"github.com/PipeOpsHQ/portage/pkg/cutover"
+	"github.com/PipeOpsHQ/portage/pkg/dump"
+	"github.com/PipeOpsHQ/portage/pkg/export"
 	"github.com/PipeOpsHQ/portage/pkg/heal"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
+	"github.com/PipeOpsHQ/portage/pkg/metrics"
 	"github.com/PipeOpsHQ/portage/pkg/movers"
 	pgmover "github.com/PipeOpsHQ/portage/pkg/movers/postgres"
 	"github.com/PipeOpsHQ/portage/pkg/movers/rclone"
 	"github.com/PipeOpsHQ/portage/pkg/movers/volsync"
+	"github.com/PipeOpsHQ/portage/pkg/objectstore"
 	"github.com/PipeOpsHQ/portage/pkg/probe"
+	"github.com/PipeOpsHQ/portage/pkg/render"
 	"github.com/PipeOpsHQ/portage/pkg/restore"
 	"github.com/PipeOpsHQ/portage/pkg/snapshots"
 	"github.com/PipeOpsHQ/portage/pkg/traffic"
@@ -57,7 +65,30 @@ type ActionReconciler struct {
 	Kube    kubernetes.Interface
 	Dynamic dynamic.Interface
 	Exec    kubeexec.Interface
+	Store   objectstore.Store
+	// Resolve returns source and dest cluster clients. Nil ⇒ in-cluster for both.
+	Resolve func(context.Context, *portagev1alpha1.ClusterPair) (clusters.Pair, error)
 	Now     func() time.Time
+}
+
+func (r *ActionReconciler) store() objectstore.Store {
+	if r.Store != nil {
+		return r.Store
+	}
+	return objectstore.FromEnv()
+}
+
+func (r *ActionReconciler) endpoints(ctx context.Context, pair *portagev1alpha1.ClusterPair) clusters.Pair {
+	if r.Resolve != nil {
+		if p, err := r.Resolve(ctx, pair); err == nil {
+			return p
+		}
+	}
+	loc := clusters.Local("local", r.Kube, r.Dynamic, r.Exec, nil)
+	if pair != nil {
+		loc.Name = pair.Spec.Source.Name
+	}
+	return clusters.Pair{Source: loc, Dest: loc}
 }
 
 func (r *ActionReconciler) now() time.Time {
@@ -104,8 +135,17 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, act, "policy: "+err.Error())
 	}
 
+	pair := r.loadPair(ctx, pol)
+	ep := r.endpoints(ctx, pair)
+	if ep.Source.Kube == nil {
+		ep.Source.Kube, ep.Source.Dynamic, ep.Source.Exec = r.Kube, r.Dynamic, r.Exec
+	}
+	if ep.Dest.Kube == nil {
+		ep.Dest = ep.Source
+	}
+
 	nss := classify.Namespaces(pol.Spec.Selector.Namespaces, pol.Namespace)
-	inv, err := classify.Walk(ctx, r.Kube, nss)
+	inv, err := classify.Walk(ctx, ep.Source.Kube, nss)
 	if err != nil {
 		logger.Error(err, "classify")
 		return ctrl.Result{}, err
@@ -117,16 +157,15 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	var res restore.Result
-	pair := r.loadPair(ctx, pol)
 	switch act.Spec.Type {
 	case portagev1alpha1.ActionBackup:
-		res, err = r.runBackup(ctx, act, pol, inv)
+		res, err = r.runBackup(ctx, act, pol, pair, ep, inv)
 	case portagev1alpha1.ActionRestore:
-		res, err = r.runRestore(ctx, act, pol, pair, inv)
+		res, err = r.runRestore(ctx, act, pol, pair, ep, inv)
 	case portagev1alpha1.ActionReplicate:
-		res, err = r.runReplicate(ctx, act, pol, pair, inv)
+		res, err = r.runReplicate(ctx, act, pol, pair, ep, inv)
 	case portagev1alpha1.ActionCutover:
-		res, err = r.runCutover(ctx, act, pol, pair, inv)
+		res, err = r.runCutover(ctx, act, pol, pair, ep, inv)
 	default:
 		return r.fail(ctx, act, "unsupported action type "+string(act.Spec.Type))
 	}
@@ -148,14 +187,17 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Status().Update(ctx, act); err != nil {
 		return ctrl.Result{}, err
 	}
+	if res.Terminal {
+		metrics.ObserveAction(string(act.Spec.Type), string(res.Phase))
+	}
 	if res.Terminal || res.RequeueAfter == 0 {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: res.RequeueAfter}, nil
 }
 
-func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Action, pol *portagev1alpha1.Policy, inv classify.Inventory) (restore.Result, error) {
-	snaps := snapshots.Client{Dynamic: r.Dynamic}
+func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Action, pol *portagev1alpha1.Policy, _ *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
+	snaps := snapshots.Client{Dynamic: ep.Source.Dynamic}
 	arts := make([]portagev1alpha1.ArtifactHealth, 0, len(inv.Workloads))
 	for _, w := range inv.Workloads {
 		if w.Class == portagev1alpha1.ClassStateless {
@@ -165,22 +207,31 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 		ready, snapName, _ := snaps.LatestReady(ctx, w)
 		size := int64(0)
 		sizeMsg := ""
-		if r.Exec != nil {
-			if n, msg, err := probe.LiveBytes(ctx, r.Kube, r.Exec, w); err == nil {
+		id := ""
+		if key, n, usefulDump, err := dump.Capture(ctx, ep.Source.Kube, ep.Source.Exec, r.store(), w, r.now()); err == nil && usefulDump {
+			size, id = n, key
+			sizeMsg = "object-store dump " + key
+		} else if ep.Source.Exec != nil {
+			if n, msg, err := probe.LiveBytes(ctx, ep.Source.Kube, ep.Source.Exec, w); err == nil {
 				size, sizeMsg = n, msg
 			} else {
 				sizeMsg = err.Error()
 			}
 		}
+		files := []usefulness.File{}
+		if id != "" {
+			files = append(files, usefulness.File{Path: "dump.sql", SizeBytes: size})
+		}
 		ev := usefulness.ForWorkload(w, usefulness.Input{
 			SizeBytes:     size,
+			Files:         files,
 			HasSnapshot:   snapName != "",
 			SnapshotReady: ready,
 		})
 		if ev.Message == "" {
 			ev.Message = sizeMsg
 		}
-		arts = append(arts, backup.FromArtifact(w, ev.Useful, ev.SizeBytes, ev.Message))
+		arts = append(arts, backup.FromArtifact(w, ev.Useful, ev.SizeBytes, ev.Message, id))
 	}
 	if err := r.writePolicyArtifacts(ctx, pol, inv, arts); err != nil {
 		return restore.Result{}, err
@@ -199,7 +250,7 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 	}, nil
 }
 
-func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, inv classify.Inventory) (restore.Result, error) {
+func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
 	facts := restore.Facts{
 		Inventory:     inv.Workloads,
 		Useful:        map[string]bool{},
@@ -215,8 +266,23 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 	for _, a := range pol.Status.Artifacts {
 		artByKey[a.Workload] = a
 	}
-	snaps := snapshots.Client{Dynamic: r.Dynamic}
+	snaps := snapshots.Client{Dynamic: ep.Dest.Dynamic}
 	opt := rehydrateOpts(pol, pair)
+	if act.Status.Phase == portagev1alpha1.ActionPhaseRehydrating || act.Status.Phase == portagev1alpha1.ActionPhaseApplying || act.Status.Phase == "" || act.Status.Phase == portagev1alpha1.ActionPhasePreflight {
+		var rendered []*unstructured.Unstructured
+		for _, w := range inv.Workloads {
+			objs, err := export.Workload(ctx, ep.Source.Kube, w)
+			if err != nil {
+				continue
+			}
+			out, err := (render.Sanitize{Options: opt.Transform}).Render(ctx, render.Request{Policy: pol, Pair: pair, SourceObjects: objs})
+			if err != nil {
+				continue
+			}
+			rendered = append(rendered, out...)
+		}
+		_ = apply.Typed(ctx, ep.Dest.Kube, rendered)
+	}
 	for _, w := range inv.Workloads {
 		if a, ok := artByKey[w.Key()]; ok {
 			facts.Useful[w.Key()] = a.Useful
@@ -229,11 +295,16 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 		}
 		rehydrated := true
 		for _, pvcName := range w.PVCNames {
-			done, healed, err := snaps.EnsurePVCFromSnapshot(ctx, r.Kube, w, pvcName, opt)
+			done, healed, err := snaps.EnsurePVCFromSnapshot(ctx, ep.Dest.Kube, w, pvcName, opt)
 			facts.Healed[w.Key()] = append(facts.Healed[w.Key()], healed...)
 			if err != nil {
-				// In-place useful backup without a snapshot: treat as rehydrated.
 				if a, ok := artByKey[w.Key()]; ok && a.Useful {
+					if a.ArtifactID != "" {
+						if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
+							rehydrated = false
+							facts.UsefulMessage[w.Key()] = rerr.Error()
+						}
+					}
 					continue
 				}
 				facts.UsefulMessage[w.Key()] = err.Error()
@@ -250,20 +321,20 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			}
 		}
 		facts.Rehydrated[w.Key()] = rehydrated
-		r.healWorkload(ctx, w, opt.Transform, facts.Healed)
-		ready, err := workloads.Ready(ctx, r.Kube, w)
+		r.healWorkloadOn(ctx, ep.Dest.Kube, w, opt.Transform, facts.Healed)
+		ready, err := workloads.Ready(ctx, ep.Dest.Kube, w)
 		if err == nil {
 			facts.Ready[w.Key()] = ready
 		}
-		if ready && r.Exec != nil {
-			facts.Probes[w.Key()] = probe.Run(ctx, r.Kube, r.Exec, w)
+		if ready && ep.Dest.Exec != nil {
+			facts.Probes[w.Key()] = probe.Run(ctx, ep.Dest.Kube, ep.Dest.Exec, w)
 		}
 	}
 	return restore.Advance(act.Status, facts), nil
 }
 
-func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, inv classify.Inventory) (restore.Result, error) {
-	reg := r.registry(pair)
+func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
+	reg := r.registry(pair, ep)
 	src, dst := movers.ClusterHandle{Name: "source"}, movers.ClusterHandle{Name: "dest"}
 	if pair != nil {
 		src.Name, dst.Name = pair.Spec.Source.Name, pair.Spec.Destination.Name
@@ -311,23 +382,24 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 	return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "replication requested", Workloads: workloadsStatus, Terminal: true}, nil
 }
 
-func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, inv classify.Inventory) (restore.Result, error) {
+func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
 	facts := cutover.Facts{
 		Inventory: inv.Workloads,
 		Ready:     map[string]bool{},
 		Probes:    map[string]movers.ProbeResult{},
 		DryRun:    act.Spec.DryRun,
+		Rollback:  act.Spec.Rollback,
 		Now:       r.now(),
 	}
-	reg := r.registry(pair)
-	pg := pgmover.Mover{Kube: r.Kube, Exec: r.Exec}
-	vs := volsync.Mover{Dynamic: r.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
+	reg := r.registry(pair, ep)
+	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
+	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
 
 	frozen, lagZero, promoted := true, true, true
 	for _, w := range inv.Stateful() {
 		switch act.Status.Phase {
 		case "", portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight, portagev1alpha1.ActionPhaseQuiescing:
-			_ = workloads.Scale(ctx, r.Kube, w, 0)
+			_ = workloads.Scale(ctx, ep.Source.Kube, w, 0)
 		}
 		if n, ok, err := pg.LagSeconds(ctx, w); err == nil && ok && n > 0 {
 			lagZero = false
@@ -351,22 +423,22 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 					promoted = false
 				}
 			} else {
-				_ = workloads.Scale(ctx, r.Kube, w, 1)
+				_ = workloads.Scale(ctx, ep.Dest.Kube, w, 1)
 			}
 		}
 		if act.Status.Phase == portagev1alpha1.ActionPhaseWaitingReady || act.Status.Phase == portagev1alpha1.ActionPhaseSwitching {
-			_ = workloads.Scale(ctx, r.Kube, w, 1)
+			_ = workloads.Scale(ctx, ep.Dest.Kube, w, 1)
 		}
-		ready, _ := workloads.Ready(ctx, r.Kube, w)
+		ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w)
 		facts.Ready[w.Key()] = ready
-		if ready && r.Exec != nil {
-			facts.Probes[w.Key()] = probe.Run(ctx, r.Kube, r.Exec, w)
+		if ready && ep.Dest.Exec != nil {
+			facts.Probes[w.Key()] = probe.Run(ctx, ep.Dest.Kube, ep.Dest.Exec, w)
 		}
 	}
 	if act.Status.Phase == portagev1alpha1.ActionPhaseQuiescing {
 		frozen = true
 		for _, w := range inv.Stateful() {
-			if !workloads.ScaledToZero(ctx, r.Kube, w) {
+			if !workloads.ScaledToZero(ctx, ep.Source.Kube, w) {
 				frozen = false
 			}
 		}
@@ -389,32 +461,47 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 			facts.Switched = true
 		}
 	}
+	if act.Spec.Rollback {
+		src, dst := "source", "dest"
+		if pair != nil {
+			src, dst = pair.Spec.Source.Name, pair.Spec.Destination.Name
+		}
+		_ = hook.Rollback(ctx, traffic.Event{Action: "rollback", Policy: pol.Name, Source: src, Destination: dst})
+		for _, w := range inv.Stateful() {
+			n := int32(1)
+			if sts, err := ep.Source.Kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{}); err == nil {
+				n = workloads.OriginalReplicas(sts.Annotations)
+			}
+			_ = workloads.Scale(ctx, ep.Source.Kube, w, n)
+		}
+		facts.Rolled = true
+	}
 
 	res := cutover.Advance(act.Status, facts)
 	return res, nil
 }
 
-func (r *ActionReconciler) healWorkload(ctx context.Context, w classify.Workload, opt transform.Options, acc map[string][]string) {
-	if r.Kube == nil {
+func (r *ActionReconciler) healWorkloadOn(ctx context.Context, kube kubernetes.Interface, w classify.Workload, opt transform.Options, acc map[string][]string) {
+	if kube == nil {
 		return
 	}
 	switch w.Kind {
 	case "StatefulSet":
-		sts, err := r.Kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
+		sts, err := kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
 		if err != nil {
 			return
 		}
 		if names := heal.PodSpec(&sts.Spec.Template.Spec); len(names) > 0 {
-			_, _ = r.Kube.AppsV1().StatefulSets(w.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
+			_, _ = kube.AppsV1().StatefulSets(w.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
 			acc[w.Key()] = append(acc[w.Key()], names...)
 		}
 	case "Deployment":
-		dep, err := r.Kube.AppsV1().Deployments(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
+		dep, err := kube.AppsV1().Deployments(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
 		if err != nil {
 			return
 		}
 		if names := heal.PodSpec(&dep.Spec.Template.Spec); len(names) > 0 {
-			_, _ = r.Kube.AppsV1().Deployments(w.Namespace).Update(ctx, dep, metav1.UpdateOptions{})
+			_, _ = kube.AppsV1().Deployments(w.Namespace).Update(ctx, dep, metav1.UpdateOptions{})
 			acc[w.Key()] = append(acc[w.Key()], names...)
 		}
 	}
@@ -431,16 +518,23 @@ func (r *ActionReconciler) loadPair(ctx context.Context, pol *portagev1alpha1.Po
 	return pair
 }
 
-func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair) *movers.Registry {
+func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep clusters.Pair) *movers.Registry {
 	reg := movers.NewRegistry()
-	reg.Register(pgmover.Mover{Kube: r.Kube, Exec: r.Exec})
+	reg.Register(pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec})
 	t := transportOf(pair)
 	path := destPath(pair)
+	dyn := ep.Source.Dynamic
+	if dyn == nil {
+		dyn = r.Dynamic
+	}
+	creds := objectstore.CredsFromEnv()
 	if t == portagev1alpha1.TransportObjectStore {
-		m := rclone.New(r.Dynamic, path)
+		m := rclone.New(dyn, path)
+		m.Kube = ep.Source.Kube
+		m.Creds = creds
 		reg.Register(m)
 	} else {
-		reg.Register(volsync.Mover{Dynamic: r.Dynamic, Transport: t, DestPath: path})
+		reg.Register(volsync.Mover{Dynamic: dyn, Kube: ep.Source.Kube, Transport: t, DestPath: path, Creds: creds})
 	}
 	return reg
 }
@@ -476,6 +570,7 @@ func (r *ActionReconciler) writePolicyArtifacts(ctx context.Context, pol *portag
 	latest.Status.Artifacts = arts
 	ok, missing := backup.Healthy(inv, arts)
 	latest.Status.BackupHealthy = ok
+	metrics.ObservePolicy(latest.Name, latest.Namespace, ok)
 	if !ok {
 		latest.Status.Phase = portagev1alpha1.PolicyUnhealthy
 		if len(missing) > 0 {

@@ -56,6 +56,16 @@ func TestCutoverDoesNotSucceedWithoutPgIsReady(t *testing.T) {
 	}
 }
 
+func TestRollbackFromSwitching(t *testing.T) {
+	t.Parallel()
+	got := Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhaseSwitching}, Facts{
+		Inventory: pg(), Rollback: true, Now: time.Now(),
+	})
+	if got.Phase != portagev1alpha1.ActionPhaseRolledBack {
+		t.Fatalf("phase=%s", got.Phase)
+	}
+}
+
 func TestCutoverSucceedsAfterSwitchAndProbe(t *testing.T) {
 	t.Parallel()
 	got := Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhaseWaitingReady}, Facts{

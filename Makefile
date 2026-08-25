@@ -42,6 +42,11 @@ tidy:
 docker-build:
 	docker build -t $(IMG) .
 
+.PHONY: docs
+docs:
+	pip install -q -r requirements-docs.txt
+	mkdocs serve -a 127.0.0.1:8000
+
 .PHONY: help
 help:
-	@echo "fmt generate manifests build test vet tidy docker-build"
+	@echo "fmt generate manifests build test vet tidy docker-build docs"

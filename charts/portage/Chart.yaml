@@ -1,0 +1,11 @@
+apiVersion: v2
+name: portage
+description: Portage by PipeOps — Kubernetes workload mobility
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: volsync
+    version: "0.12.0"
+    repository: https://backube.github.io/helm-charts/
+    condition: volsync.enabled

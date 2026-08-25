@@ -27,10 +27,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/movers"
+	"github.com/PipeOpsHQ/portage/pkg/objectstore"
 )
 
 var (
@@ -41,9 +43,11 @@ var (
 // Mover creates VolSync CRs. Transport ObjectStore uses rclone; Direct uses rsyncTLS.
 type Mover struct {
 	Dynamic   dynamic.Interface
+	Kube      kubernetes.Interface
 	Transport portagev1alpha1.TransportType
 	DestPath  string // rclone dest, e.g. s3://bucket/prefix
 	Schedule  string
+	Creds     objectstore.Creds
 }
 
 func (m Mover) Name() string { return "volsync" }
@@ -77,6 +81,9 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	}
 	if len(w.PVCNames) == 0 {
 		return nil
+	}
+	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds); err != nil {
+		return fmt.Errorf("volsync secrets: %w", err)
 	}
 	pvc := w.PVCNames[0]
 	name := "portage-" + w.Name
@@ -128,12 +135,16 @@ func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstr
 			path = "s3://portage/" + w.Namespace + "/" + w.Name
 		}
 		spec["rclone"] = map[string]any{
-			"rcloneConfigSection": "rclone.conf",
+			"rcloneConfigSection": "rclone",
+			"rcloneConfig":        rcloneSecretName,
 			"rcloneDestPath":      path,
 			"copyMethod":          "Snapshot",
 		}
 	} else {
-		spec["rsyncTLS"] = map[string]any{"copyMethod": "Snapshot"}
+		spec["rsyncTLS"] = map[string]any{
+			"copyMethod": "Snapshot",
+			"keySecret":  tlsSecretName,
+		}
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "volsync.backube/v1alpha1",
@@ -155,12 +166,16 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 			path = "s3://portage/" + w.Namespace + "/" + w.Name
 		}
 		spec["rclone"] = map[string]any{
-			"rcloneConfigSection": "rclone.conf",
+			"rcloneConfigSection": "rclone",
+			"rcloneConfig":        rcloneSecretName,
 			"rcloneDestPath":      path,
 			"copyMethod":          "Snapshot",
 		}
 	} else {
-		spec["rsyncTLS"] = map[string]any{"serviceType": "LoadBalancer"}
+		spec["rsyncTLS"] = map[string]any{
+			"serviceType": "LoadBalancer",
+			"keySecret":   tlsSecretName,
+		}
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "volsync.backube/v1alpha1",

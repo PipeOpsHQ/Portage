@@ -1,0 +1,53 @@
+site_name: Portage by PipeOps
+site_description: Kubernetes workload mobility — classify, replicate, restore, cut over.
+site_url: https://pipeopshq.github.io/Portage/
+repo_url: https://github.com/PipeOpsHQ/Portage
+repo_name: PipeOpsHQ/Portage
+edit_uri: edit/main/docs/
+copyright: Copyright 2026 PipeOps and the Portage Authors. Apache-2.0.
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Light mode
+    - scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Concepts: concepts.md
+  - CRDs: crds.md
+  - Backup & restore: backup-restore.md
+  - Replication & cutover: cutover.md
+  - Configuration: configuration.md
+  - CLI: cli.md
+  - Architecture: architecture.md
+  - Contributing: contributing.md

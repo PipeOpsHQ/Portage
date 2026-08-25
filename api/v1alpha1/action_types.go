@@ -70,6 +70,10 @@ type ActionSpec struct {
 	// DryRun runs preflight and classification only.
 	// +optional
 	DryRun bool `json:"dryRun,omitempty"`
+
+	// Rollback unfreezes source and fires the traffic rollback hook.
+	// +optional
+	Rollback bool `json:"rollback,omitempty"`
 }
 
 // WorkloadActionStatus is per-workload progress inside an Action.

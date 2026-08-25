@@ -149,6 +149,20 @@ database path.
 8. `Policy.spec.restore.auto`
 9. rclone object-store transport as default multi-cloud hop
 
-All nine waves are implemented in-tree. Remaining work is production hardening
-(real dest kubeconfig clients, VolSync operator on clusters, live traffic
-hooks), not more CRDs.
+All nine original waves plus the closing gap are in-tree:
+
+- Dual-cluster `Resolve` (source vs dest kubeclients)
+- Object-store dumps (`pg_dumpall` → Store) that survive a cloud boundary
+- Dest Sanitize-apply (PVC/STS typed create)
+- Postgres standby ConfigMap on dest; cutover rollback unfreezes source
+- Dual-client test: dest STS exists and dump is in the store
+- Helm chart + manager Deployment + Prometheus metrics
+
+Operational pieces now in-tree:
+
+- SigV4 S3 (`objectstore.NewS3` / AWS_* + PORTAGE_S3_*)
+- VolSync `rclone.conf` + rsyncTLS PSK secrets (not rotated)
+- Postgres `CREATE ROLE replicator`, source Service, dest `pg_basebackup` Job, STS standby mount
+- `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters, classify postgres)
+
+Helm: `volsync.enabled=true` pulls the Backube chart.

@@ -37,9 +37,11 @@ type Facts struct {
 	LagZero   bool
 	Promoted  bool
 	Switched  bool
+	Rolled    bool
 	Ready     map[string]bool
 	Probes    map[string]movers.ProbeResult
 	DryRun    bool
+	Rollback  bool
 	Now       time.Time
 }
 
@@ -50,10 +52,16 @@ func Advance(status portagev1alpha1.ActionStatus, facts Facts) restore.Result {
 		phase = portagev1alpha1.ActionPhasePending
 	}
 	workloads := seed(status.Workloads, facts)
+	if facts.Rollback && phase != portagev1alpha1.ActionPhaseRolledBack {
+		return restore.Result{Phase: portagev1alpha1.ActionPhaseRolledBack, Message: "source unfrozen; traffic rolled back", Workloads: workloads, Terminal: true}
+	}
 	switch phase {
 	case portagev1alpha1.ActionPhaseSucceeded, portagev1alpha1.ActionPhaseFailed, portagev1alpha1.ActionPhaseRolledBack:
 		return restore.Result{Phase: phase, Message: status.Message, Workloads: workloads, Attestation: status.Attestation, Terminal: true}
 	case portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight:
+		if facts.Rollback {
+			return restore.Result{Phase: portagev1alpha1.ActionPhaseRolledBack, Message: "rollback requested", Workloads: workloads, Terminal: true}
+		}
 		if facts.DryRun {
 			return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "dry-run cutover preflight", Workloads: workloads, Terminal: true}
 		}

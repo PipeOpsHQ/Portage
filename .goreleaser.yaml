@@ -1,0 +1,45 @@
+version: 2
+project_name: portage
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: portage
+    main: ./cmd/portage
+    binary: portage
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/PipeOpsHQ/portage/internal/version.Version={{.Version}}
+      - -X github.com/PipeOpsHQ/portage/internal/version.GitCommit={{.ShortCommit}}
+      - -X github.com/PipeOpsHQ/portage/internal/version.BuildTime={{.Date}}
+  - id: controller
+    main: ./cmd/controller
+    binary: controller
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/PipeOpsHQ/portage/internal/version.Version={{.Version}}
+archives:
+  - id: portage
+    builds: [portage]
+    name_template: "portage_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: controller
+    builds: [controller]
+    name_template: "controller_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: checksums.txt
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+release:
+  github:
+    owner: PipeOpsHQ
+    name: Portage

@@ -1,0 +1,111 @@
+/*
+Copyright 2026 PipeOps and the Portage Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package volsync
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
+	"github.com/PipeOpsHQ/portage/pkg/objectstore"
+)
+
+const (
+	rcloneSecretName = "portage-rclone"
+	tlsSecretName    = "portage-rsync-tls"
+)
+
+// SecretNames used in ReplicationSource/Destination specs.
+func SecretNames() (rclone, tls string) { return rcloneSecretName, tlsSecretName }
+
+// RcloneINI is the VolSync rclone.conf section (must match rcloneConfigSection).
+func RcloneINI(c objectstore.Creds) string {
+	ep := c.Endpoint
+	provider := "AWS"
+	if ep != "" {
+		provider = "Minio"
+	}
+	return fmt.Sprintf(`[rclone]
+type = s3
+provider = %s
+env_auth = false
+access_key_id = %s
+secret_access_key = %s
+endpoint = %s
+region = %s
+`, provider, c.AccessKey, c.SecretKey, ep, orRegion(c.Region))
+}
+
+func orRegion(r string) string {
+	if r == "" {
+		return "us-east-1"
+	}
+	return r
+}
+
+// EnsureSecrets writes rclone.conf and rsyncTLS PSK secrets if they do not exist.
+func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds) error {
+	if kube == nil || namespace == "" {
+		return nil
+	}
+	if c.AccessKey != "" {
+		sec := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: rcloneSecretName, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{"rclone.conf": []byte(RcloneINI(c))},
+		}
+		if err := upsertSecret(ctx, kube, sec); err != nil {
+			return err
+		}
+	}
+	psk := make([]byte, 32)
+	if _, err := rand.Read(psk); err != nil {
+		return err
+	}
+	tls := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{"psk": []byte(hex.EncodeToString(psk))},
+	}
+	// Do not rotate an existing PSK — VolSync peers would desync.
+	_, err := kube.CoreV1().Secrets(namespace).Get(ctx, tlsSecretName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		_, err = kube.CoreV1().Secrets(namespace).Create(ctx, tls, metav1.CreateOptions{})
+	}
+	return ignoreExists(err)
+}
+
+func upsertSecret(ctx context.Context, kube kubernetes.Interface, sec *corev1.Secret) error {
+	_, err := kube.CoreV1().Secrets(sec.Namespace).Create(ctx, sec, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		_, err = kube.CoreV1().Secrets(sec.Namespace).Update(ctx, sec, metav1.UpdateOptions{})
+	}
+	return err
+}
+
+func ignoreExists(err error) error {
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}

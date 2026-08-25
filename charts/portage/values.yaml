@@ -1,0 +1,17 @@
+volsync:
+  enabled: false
+
+image:
+  repository: ghcr.io/pipeopshq/portage
+  tag: dev
+  pullPolicy: IfNotPresent
+replicaCount: 1
+store:
+  dir: /store
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

@@ -1,4 +1,5 @@
 bin/
+site/
 dist/
 cover.out
 coverage.out

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: portage-system
+resources:
+  - namespace.yaml
+  - ../crd
+  - ../rbac
+  - ../manager
+images:
+  - name: ghcr.io/pipeopshq/portage
+    newTag: dev

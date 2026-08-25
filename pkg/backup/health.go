@@ -40,11 +40,12 @@ func Healthy(inv classify.Inventory, artifacts []portagev1alpha1.ArtifactHealth)
 }
 
 // FromArtifact converts a mover artifact into Policy status.
-func FromArtifact(w classify.Workload, useful bool, size int64, msg string) portagev1alpha1.ArtifactHealth {
+func FromArtifact(w classify.Workload, useful bool, size int64, msg, id string) portagev1alpha1.ArtifactHealth {
 	return portagev1alpha1.ArtifactHealth{
-		Workload:  w.Key(),
-		Useful:    useful,
-		SizeBytes: size,
-		Message:   msg,
+		Workload:   w.Key(),
+		Useful:     useful,
+		SizeBytes:  size,
+		Message:    msg,
+		ArtifactID: id,
 	}
 }

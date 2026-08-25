@@ -200,9 +200,12 @@ type InventoryItem struct {
 
 // ArtifactHealth is usefulness of the latest backup for one workload.
 type ArtifactHealth struct {
-	Workload       string       `json:"workload"`
-	Useful         bool         `json:"useful"`
-	SizeBytes      int64        `json:"sizeBytes,omitempty"`
+	Workload  string `json:"workload"`
+	Useful    bool   `json:"useful"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	// ArtifactID is the object-store key (portable dump). Empty means CSI-only.
+	// +optional
+	ArtifactID     string       `json:"artifactID,omitempty"`
 	LastBackupTime *metav1.Time `json:"lastBackupTime,omitempty"`
 	Message        string       `json:"message,omitempty"`
 }

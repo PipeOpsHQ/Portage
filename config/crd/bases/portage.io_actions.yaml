@@ -63,6 +63,10 @@ spec:
             policyRef:
               description: PolicyRef is the namespaced Policy this action executes.
               type: string
+            rollback:
+              description: Rollback unfreezes source and fires the traffic rollback
+                hook.
+              type: boolean
             snapshotID:
               description: SnapshotID optionally pins restore to a specific artifact.
               type: string

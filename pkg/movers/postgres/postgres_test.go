@@ -20,6 +20,10 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/movers"
@@ -35,6 +39,26 @@ func TestDiscoverOnlyPostgres(t *testing.T) {
 	cap, err = m.Discover(context.Background(), classify.Workload{Engine: "postgres", Class: portagev1alpha1.ClassSQLLogical})
 	if err != nil || !cap.Replicate {
 		t.Fatalf("postgres: %+v err=%v", cap, err)
+	}
+}
+
+func TestReplicateWritesStandbyConfigOnDest(t *testing.T) {
+	t.Parallel()
+	dest := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	m := Mover{Dest: dest}
+	w := classify.Workload{Namespace: "ns", Name: "pg", Engine: "postgres", Class: portagev1alpha1.ClassSQLLogical}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{Name: "aws"}, movers.ClusterHandle{Name: "gcp"}); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := dest.CoreV1().ConfigMaps("ns").Get(context.Background(), "portage-standby-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cm.Data["hot_standby"] != "on" || cm.Data["primary_conninfo"] == "" {
+		t.Fatalf("%v", cm.Data)
+	}
+	if _, err := dest.BatchV1().Jobs("ns").Get(context.Background(), "portage-basebackup-pg", metav1.GetOptions{}); err != nil {
+		t.Fatalf("basebackup job: %v", err)
 	}
 }
 

@@ -208,6 +208,10 @@ spec:
                 description: ArtifactHealth is usefulness of the latest backup for
                   one workload.
                 properties:
+                  artifactID:
+                    description: ArtifactID is the object-store key (portable dump).
+                      Empty means CSI-only.
+                    type: string
                   lastBackupTime:
                     format: date-time
                     type: string

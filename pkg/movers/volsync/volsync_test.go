@@ -51,6 +51,10 @@ func TestReplicateObjectStoreUsesRclone(t *testing.T) {
 	if path != "s3://bucket/ns/pg" {
 		t.Fatalf("rclone path=%q", path)
 	}
+	sec, _, _ := unstructured.NestedString(obj.Object, "spec", "rclone", "rcloneConfig")
+	if sec != rcloneSecretName {
+		t.Fatalf("rcloneConfig=%q", sec)
+	}
 }
 
 func TestReplicateDirectUsesRsyncTLS(t *testing.T) {

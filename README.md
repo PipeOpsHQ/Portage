@@ -1,5 +1,11 @@
 # Portage by PipeOps
 
+[![CI](https://github.com/PipeOpsHQ/Portage/actions/workflows/ci.yaml/badge.svg)](https://github.com/PipeOpsHQ/Portage/actions/workflows/ci.yaml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-teal)](https://pipeopshq.github.io/Portage/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/PipeOpsHQ/portage.svg)](https://pkg.go.dev/github.com/PipeOpsHQ/portage)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/PipeOpsHQ/Portage)](https://github.com/PipeOpsHQ/Portage/releases)
+
 **Asynchronous, class-aware workload mobility for Kubernetes.**
 
 Portage is an open source project by [PipeOps](https://pipeops.io). It
@@ -33,11 +39,19 @@ source cluster  ──replicate / restore──►  dest cluster
 Use Velero for cluster-state backup if you want it. Use Portage to move
 *applications* and know they actually came up.
 
+## Documentation
+
+**[pipeopshq.github.io/Portage](https://pipeopshq.github.io/Portage/)** — install, CRDs, backup/restore, cutover, architecture.
+
+Go module: `go get github.com/PipeOpsHQ/portage@v0.1.0`  
+Binaries: [GitHub Releases](https://github.com/PipeOpsHQ/Portage/releases)  
+Image: `ghcr.io/pipeopshq/portage:v0.1.0`
+
 ## Status
 
-Early scaffolding. The public API (`portage.io/v1alpha1`) and classifier are
-real. Movers (VolSync, dumps, streaming replicas) and the Restore/Cutover
-state machines are next — see [docs/architecture.md](docs/architecture.md).
+v0.1.0 — operator, CLI, dual-cluster clients, object-store dumps, dest apply,
+VolSync secrets, Postgres standby Job, kind e2e. See
+[docs](https://pipeopshq.github.io/Portage/).
 
 ## CRDs
 
@@ -112,6 +126,13 @@ product.
 3. `Completed` from a backup CR is not success.
 4. Apache-2.0, DCO, Kubernetes-style CRDs. PipeOps-the-product is an adapter, not an import.
 
+Install the hub:
+
+```bash
+kubectl apply -k config/default
+# or: helm install portage charts/portage
+```
+
 ## Build
 
 ```bash
@@ -126,3 +147,5 @@ make build
 Apache License 2.0 — see [LICENSE](LICENSE).
 
 Copyright 2026 PipeOps and the Portage Authors. **Portage by PipeOps.**
+
+Docs: [pipeopshq.github.io/Portage](https://pipeopshq.github.io/Portage/)

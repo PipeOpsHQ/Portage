@@ -39,6 +39,8 @@ type Result struct {
 // Interface execs a command in a container.
 type Interface interface {
 	Exec(ctx context.Context, namespace, pod, container string, command []string) (Result, error)
+	// ExecIn is Exec with stdin (restore dumps).
+	ExecIn(ctx context.Context, namespace, pod, container string, command []string, stdin []byte) (Result, error)
 }
 
 // SPDY implements Interface with the Kubernetes exec subresource.
@@ -49,29 +51,37 @@ type SPDY struct {
 
 // Exec implements Interface.
 func (s SPDY) Exec(ctx context.Context, namespace, pod, container string, command []string) (Result, error) {
+	return s.ExecIn(ctx, namespace, pod, container, command, nil)
+}
+
+// ExecIn implements Interface.
+func (s SPDY) ExecIn(ctx context.Context, namespace, pod, container string, command []string, stdin []byte) (Result, error) {
 	if s.Client == nil || s.Config == nil {
 		return Result{}, fmt.Errorf("kubeexec: client/config not configured")
+	}
+	opts := &corev1.PodExecOptions{
+		Container: container,
+		Command:   command,
+		Stdout:    true,
+		Stderr:    true,
+		Stdin:     len(stdin) > 0,
 	}
 	req := s.Client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod).
 		Namespace(namespace).
 		SubResource("exec").
-		VersionedParams(&corev1.PodExecOptions{
-			Container: container,
-			Command:   command,
-			Stdout:    true,
-			Stderr:    true,
-		}, scheme.ParameterCodec)
+		VersionedParams(opts, scheme.ParameterCodec)
 	executor, err := remotecommand.NewSPDYExecutor(s.Config, "POST", req.URL())
 	if err != nil {
 		return Result{}, err
 	}
 	var stdout, stderr bytes.Buffer
-	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}); err != nil {
+	stream := remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}
+	if len(stdin) > 0 {
+		stream.Stdin = bytes.NewReader(stdin)
+	}
+	if err := executor.StreamWithContext(ctx, stream); err != nil {
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("exec %s/%s: %w", namespace, pod, err)
 	}
 	return Result{Stdout: stdout.String(), Stderr: stderr.String()}, nil
@@ -85,12 +95,22 @@ type Fake struct {
 	Errors map[string]error
 	// Calls records Exec invocations.
 	Calls []string
+	// LastStdin is the most recent ExecIn payload.
+	LastStdin []byte
 }
 
 // Exec implements Interface.
-func (f *Fake) Exec(_ context.Context, namespace, pod, container string, command []string) (Result, error) {
+func (f *Fake) Exec(ctx context.Context, namespace, pod, container string, command []string) (Result, error) {
+	return f.ExecIn(ctx, namespace, pod, container, command, nil)
+}
+
+// ExecIn implements Interface.
+func (f *Fake) ExecIn(_ context.Context, namespace, pod, container string, command []string, stdin []byte) (Result, error) {
 	key := namespace + "/" + pod
 	f.Calls = append(f.Calls, key+" "+strings.Join(command, " "))
+	if len(stdin) > 0 {
+		f.LastStdin = append([]byte(nil), stdin...)
+	}
 	if f.Errors != nil {
 		if err, ok := f.Errors[key]; ok {
 			return Result{}, err
