@@ -21,9 +21,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -72,7 +74,7 @@ func (s SPDY) ExecIn(ctx context.Context, namespace, pod, container string, comm
 		Namespace(namespace).
 		SubResource("exec").
 		VersionedParams(opts, scheme.ParameterCodec)
-	executor, err := remotecommand.NewSPDYExecutor(s.Config, "POST", req.URL())
+	executor, err := s.executor(req.URL())
 	if err != nil {
 		return Result{}, err
 	}
@@ -85,6 +87,23 @@ func (s SPDY) ExecIn(ctx context.Context, namespace, pod, container string, comm
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("exec %s/%s: %w", namespace, pod, err)
 	}
 	return Result{Stdout: stdout.String(), Stderr: stderr.String()}, nil
+}
+
+func (s SPDY) executor(u *url.URL) (remotecommand.Executor, error) {
+	spdy, err := remotecommand.NewSPDYExecutor(s.Config, "POST", u)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := remotecommand.NewWebSocketExecutor(s.Config, "GET", u.String())
+	if err != nil {
+		return spdy, nil
+	}
+	return remotecommand.NewFallbackExecutor(ws, spdy, func(err error) bool {
+		if err == nil {
+			return false
+		}
+		return httpstream.IsUpgradeFailure(err) || strings.Contains(strings.ToLower(err.Error()), "upgrade")
+	})
 }
 
 // Fake is an in-memory execer for tests. Key: namespace/pod.

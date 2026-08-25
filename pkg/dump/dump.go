@@ -36,7 +36,7 @@ import (
 func Command(engine string) []string {
 	switch engine {
 	case "postgres", "timescale":
-		return []string{"/bin/sh", "-c", `pg_dumpall --clean`}
+		return []string{"/bin/sh", "-c", `pg_dumpall -U postgres --clean`}
 	case "mysql", "mariadb":
 		return []string{"/bin/sh", "-c", `mysqldump --all-databases --single-transaction`}
 	case "mongo":
@@ -52,7 +52,7 @@ func Command(engine string) []string {
 func RestoreCommand(engine string) []string {
 	switch engine {
 	case "postgres", "timescale":
-		return []string{"/bin/sh", "-c", `psql -U "${PGUSER:-postgres}" -v ON_ERROR_STOP=1`}
+		return []string{"/bin/sh", "-c", `psql -U postgres -v ON_ERROR_STOP=1`}
 	case "mysql", "mariadb":
 		return []string{"/bin/sh", "-c", `mysql`}
 	case "mongo":

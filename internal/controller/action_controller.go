@@ -228,12 +228,12 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 			// Empty Postgres datadir is tens of MiB and is the Velero trap.
 			key, n, usefulDump, err := dump.Capture(ctx, ep.Source.Kube, ep.Source.Exec, r.store(), w, r.now())
 			if err != nil {
-				sizeMsg = err.Error()
-			} else {
-				size, id = n, key
-				if usefulDump {
-					sizeMsg = "object-store dump " + key
-				}
+				arts = append(arts, backup.FromArtifact(w, false, 0, "dump: "+err.Error(), ""))
+				continue
+			}
+			size, id = n, key
+			if usefulDump {
+				sizeMsg = "object-store dump " + key
 			}
 		} else if ep.Source.Exec != nil {
 			if n, msg, err := probe.LiveBytes(ctx, ep.Source.Kube, ep.Source.Exec, w); err == nil {
