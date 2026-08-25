@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -55,7 +56,11 @@ func Local(name string, kube kubernetes.Interface, dyn dynamic.Interface, exec k
 
 // Resolver builds a Pair from a ClusterPair CR.
 type Resolver struct {
-	Hub       client.Client
+	Hub client.Client
+	// Secrets reads kubeconfig Secrets. Prefer this over Hub: the manager
+	// cache does not watch Secrets unless a reconciler lists them, so Hub.Get
+	// silently misses dest kubeconfigs and Restore runs against the source.
+	Secrets   kubernetes.Interface
 	Local     Endpoints
 	HubNS     string
 	NewForCfg func(*rest.Config) (kubernetes.Interface, dynamic.Interface, kubeexec.Interface, error)
@@ -87,9 +92,6 @@ func (r Resolver) Resolve(ctx context.Context, pair *portagev1alpha1.ClusterPair
 }
 
 func (r Resolver) fromSecret(ctx context.Context, ref portagev1alpha1.ClusterRef) (Endpoints, error) {
-	if r.Hub == nil {
-		return Endpoints{}, fmt.Errorf("hub client required to load kubeconfig secret")
-	}
 	ns := ref.KubeconfigSecret.Namespace
 	if ns == "" {
 		ns = r.HubNS
@@ -101,13 +103,9 @@ func (r Resolver) fromSecret(ctx context.Context, ref portagev1alpha1.ClusterRef
 	if keyName == "" {
 		keyName = "kubeconfig"
 	}
-	sec := &corev1.Secret{}
-	if err := r.Hub.Get(ctx, types.NamespacedName{Name: ref.KubeconfigSecret.Name, Namespace: ns}, sec); err != nil {
+	raw, err := r.secretBytes(ctx, ns, ref.KubeconfigSecret.Name, keyName)
+	if err != nil {
 		return Endpoints{}, err
-	}
-	raw, ok := sec.Data[keyName]
-	if !ok {
-		return Endpoints{}, fmt.Errorf("secret %s/%s missing key %s", ns, ref.KubeconfigSecret.Name, keyName)
 	}
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(raw)
 	if err != nil {
@@ -122,6 +120,32 @@ func (r Resolver) fromSecret(ctx context.Context, ref portagev1alpha1.ClusterRef
 		return Endpoints{}, err
 	}
 	return Endpoints{Name: ref.Name, Kube: kube, Dynamic: dyn, Exec: exec, REST: cfg}, nil
+}
+
+func (r Resolver) secretBytes(ctx context.Context, ns, name, key string) ([]byte, error) {
+	if r.Secrets != nil {
+		sec, err := r.Secrets.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		raw, ok := sec.Data[key]
+		if !ok {
+			return nil, fmt.Errorf("secret %s/%s missing key %s", ns, name, key)
+		}
+		return raw, nil
+	}
+	if r.Hub == nil {
+		return nil, fmt.Errorf("hub client required to load kubeconfig secret")
+	}
+	sec := &corev1.Secret{}
+	if err := r.Hub.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, sec); err != nil {
+		return nil, err
+	}
+	raw, ok := sec.Data[key]
+	if !ok {
+		return nil, fmt.Errorf("secret %s/%s missing key %s", ns, name, key)
+	}
+	return raw, nil
 }
 
 func defaultNew(cfg *rest.Config) (kubernetes.Interface, dynamic.Interface, kubeexec.Interface, error) {

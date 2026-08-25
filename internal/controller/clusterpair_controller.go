@@ -21,10 +21,8 @@ import (
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -90,18 +88,20 @@ func (r *ClusterPairReconciler) pingRef(ctx context.Context, ref portagev1alpha1
 	if ns == "" {
 		ns = "portage-system"
 	}
-	key := types.NamespacedName{Name: ref.KubeconfigSecret.Name, Namespace: ns}
-	sec := &corev1.Secret{}
-	if err := r.Get(ctx, key, sec); err != nil {
-		return false, "kubeconfig secret: " + err.Error()
+	if r.KubeClient == nil {
+		return false, "kube client is not configured"
 	}
 	k := ref.KubeconfigSecret.Key
 	if k == "" {
 		k = "kubeconfig"
 	}
+	sec, err := r.KubeClient.CoreV1().Secrets(ns).Get(ctx, ref.KubeconfigSecret.Name, metav1.GetOptions{})
+	if err != nil {
+		return false, "kubeconfig secret: " + err.Error()
+	}
 	raw, ok := sec.Data[k]
 	if !ok {
-		return false, fmt.Sprintf("secret %s missing key %s", key.Name, k)
+		return false, fmt.Sprintf("secret %s missing key %s", ref.KubeconfigSecret.Name, k)
 	}
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(raw)
 	if err != nil {

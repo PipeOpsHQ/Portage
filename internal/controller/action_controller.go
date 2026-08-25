@@ -80,12 +80,20 @@ func (r *ActionReconciler) store() objectstore.Store {
 }
 
 func (r *ActionReconciler) endpoints(ctx context.Context, pair *portagev1alpha1.ClusterPair) clusters.Pair {
+	loc := clusters.Local("local", r.Kube, r.Dynamic, r.Exec, nil)
 	if r.Resolve != nil {
-		if p, err := r.Resolve(ctx, pair); err == nil {
+		p, err := r.Resolve(ctx, pair)
+		if err == nil {
+			if p.Source.Kube == nil {
+				p.Source = loc
+			}
+			if p.Dest.Kube == nil {
+				p.Dest = p.Source
+			}
 			return p
 		}
+		log.FromContext(ctx).Error(err, "resolve ClusterPair; falling back to in-cluster dest")
 	}
-	loc := clusters.Local("local", r.Kube, r.Dynamic, r.Exec, nil)
 	if pair != nil {
 		loc.Name = pair.Spec.Source.Name
 	}

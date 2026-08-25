@@ -87,9 +87,10 @@ func main() {
 
 	execer := kubeexec.SPDY{Config: mgr.GetConfig(), Client: kubeClient}
 	resolver := clusters.Resolver{
-		Hub:   mgr.GetClient(),
-		Local: clusters.Local("local", kubeClient, dyn, execer, mgr.GetConfig()),
-		HubNS: "portage-system",
+		Hub:     mgr.GetClient(),
+		Secrets: kubeClient,
+		Local:   clusters.Local("local", kubeClient, dyn, execer, mgr.GetConfig()),
+		HubNS:   "portage-system",
 	}
 
 	if err = (&controller.PolicyReconciler{
