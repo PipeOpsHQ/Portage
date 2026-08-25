@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 IMG ?= ghcr.io/pipeopshq/portage:dev
-CONTROLLER_GEN ?= controller-gen
+# v0.3.x emits apiextensions.k8s.io/v1beta1, which Kind 1.22+ (and CI's 1.35) reject.
+CONTROLLER_GEN_VERSION ?= v0.18.0
+CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 GO ?= go
 
 .PHONY: all

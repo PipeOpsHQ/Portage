@@ -20,6 +20,11 @@ kind create cluster --name "$DST"
 SRC_CTX="kind-${SRC}"
 DST_CTX="kind-${DST}"
 
+# CRDs must be apiextensions.k8s.io/v1 — v1beta1 is gone on Kind 1.22+.
+if grep -q 'apiextensions.k8s.io/v1beta1' "${ROOT}/config/crd/bases"/*.yaml; then
+  echo "CRDs are v1beta1; regenerate with: make manifests" >&2
+  exit 1
+fi
 kubectl --context "$SRC_CTX" apply -k "${ROOT}/config/crd"
 kubectl --context "$DST_CTX" apply -k "${ROOT}/config/crd"
 kubectl --context "$SRC_CTX" wait --for=condition=Established crd/policies.portage.io --timeout=60s

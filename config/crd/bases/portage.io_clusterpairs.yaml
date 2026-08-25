@@ -1,29 +1,11 @@
-
 ---
-apiVersion: apiextensions.k8s.io/v1beta1
+apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.3.0
-  creationTimestamp: null
+    controller-gen.kubebuilder.io/version: v0.18.0
   name: clusterpairs.portage.io
 spec:
-  additionalPrinterColumns:
-  - JSONPath: .spec.source.name
-    name: Source
-    type: string
-  - JSONPath: .spec.destination.name
-    name: Destination
-    type: string
-  - JSONPath: .spec.transport
-    name: Transport
-    type: string
-  - JSONPath: .status.phase
-    name: Phase
-    type: string
-  - JSONPath: .metadata.creationTimestamp
-    name: Age
-    type: date
   group: portage.io
   names:
     kind: ClusterPair
@@ -33,252 +15,256 @@ spec:
     - cpair
     singular: clusterpair
   scope: Cluster
-  subresources:
-    status: {}
-  validation:
-    openAPIV3Schema:
-      description: ClusterPair binds two Kubernetes clusters for replication, restore,
-        and cutover.
-      properties:
-        apiVersion:
-          description: 'APIVersion defines the versioned schema of this representation
-            of an object. Servers should convert recognized schemas to the latest
-            internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
-          type: string
-        kind:
-          description: 'Kind is a string value representing the REST resource this
-            object represents. Servers may infer this from the endpoint the client
-            submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
-          type: string
-        metadata:
-          type: object
-        spec:
-          description: ClusterPairSpec pairs a source cluster with a destination cluster.
-          properties:
-            destination:
-              description: ClusterRef identifies a Kubernetes cluster the hub can
-                reach.
-              properties:
-                kubeconfigSecret:
-                  description: KubeconfigSecret is a Secret containing a kubeconfig
-                    used to reach this cluster. Empty means "the cluster this controller
-                    runs on".
-                  properties:
-                    key:
-                      description: Key defaults to "kubeconfig".
-                      type: string
-                    name:
-                      type: string
-                    namespace:
-                      description: Namespace of the Secret. Empty means the hub namespace.
-                      type: string
-                  required:
-                  - name
-                  type: object
-                name:
-                  description: Name is a stable identifier used in logs and status
-                    (not a K8s name).
-                  type: string
-                objectStore:
-                  description: ObjectStore is an optional bucket prefix used as the
-                    rclone hop and as the default backup artifact location for this
-                    cluster.
-                  properties:
-                    credentialsSecret:
-                      description: 'CredentialsSecret holds access keys. Keys: accessKey,
-                        secretKey, optional sessionToken.'
-                      properties:
-                        name:
-                          type: string
-                      required:
-                      - name
-                      type: object
-                    region:
-                      description: Region is required by some providers.
-                      type: string
-                    url:
-                      description: URL is s3://bucket/prefix, gs://bucket/prefix,
-                        or an S3-compatible endpoint URL.
-                      type: string
-                  required:
-                  - url
-                  type: object
-              required:
-              - name
-              type: object
-            snapshotClassMap:
-              additionalProperties:
-                type: string
-              description: SnapshotClassMap remaps VolumeSnapshotClass names across
-                clusters.
-              type: object
-            source:
-              description: ClusterRef identifies a Kubernetes cluster the hub can
-                reach.
-              properties:
-                kubeconfigSecret:
-                  description: KubeconfigSecret is a Secret containing a kubeconfig
-                    used to reach this cluster. Empty means "the cluster this controller
-                    runs on".
-                  properties:
-                    key:
-                      description: Key defaults to "kubeconfig".
-                      type: string
-                    name:
-                      type: string
-                    namespace:
-                      description: Namespace of the Secret. Empty means the hub namespace.
-                      type: string
-                  required:
-                  - name
-                  type: object
-                name:
-                  description: Name is a stable identifier used in logs and status
-                    (not a K8s name).
-                  type: string
-                objectStore:
-                  description: ObjectStore is an optional bucket prefix used as the
-                    rclone hop and as the default backup artifact location for this
-                    cluster.
-                  properties:
-                    credentialsSecret:
-                      description: 'CredentialsSecret holds access keys. Keys: accessKey,
-                        secretKey, optional sessionToken.'
-                      properties:
-                        name:
-                          type: string
-                      required:
-                      - name
-                      type: object
-                    region:
-                      description: Region is required by some providers.
-                      type: string
-                    url:
-                      description: URL is s3://bucket/prefix, gs://bucket/prefix,
-                        or an S3-compatible endpoint URL.
-                      type: string
-                  required:
-                  - url
-                  type: object
-              required:
-              - name
-              type: object
-            storageClassMap:
-              additionalProperties:
-                type: string
-              description: StorageClassMap remaps source StorageClass names to destination
-                names.
-              type: object
-            transport:
-              default: ObjectStore
-              description: Transport selects Direct (cluster-to-cluster) or ObjectStore
-                hop.
-              enum:
-              - Direct
-              - ObjectStore
-              type: string
-          required:
-          - destination
-          - source
-          type: object
-        status:
-          description: ClusterPairStatus is the observed state of a ClusterPair.
-          properties:
-            conditions:
-              items:
-                description: "Condition contains details for one aspect of the current
-                  state of this API Resource. --- This struct is intended for direct
-                  use as an array at the field path .status.conditions.  For example,
-                  \n \ttype FooStatus struct{ \t    // Represents the observations
-                  of a foo's current state. \t    // Known .status.conditions.type
-                  are: \"Available\", \"Progressing\", and \"Degraded\" \t    // +patchMergeKey=type
-                  \t    // +patchStrategy=merge \t    // +listType=map \t    // +listMapKey=type
-                  \t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
-                  patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`
-                  \n \t    // other fields \t}"
-                properties:
-                  lastTransitionTime:
-                    description: lastTransitionTime is the last time the condition
-                      transitioned from one status to another. This should be when
-                      the underlying condition changed.  If that is not known, then
-                      using the time when the API field changed is acceptable.
-                    format: date-time
-                    type: string
-                  message:
-                    description: message is a human readable message indicating details
-                      about the transition. This may be an empty string.
-                    maxLength: 32768
-                    type: string
-                  observedGeneration:
-                    description: observedGeneration represents the .metadata.generation
-                      that the condition was set based upon. For instance, if .metadata.generation
-                      is currently 12, but the .status.conditions[x].observedGeneration
-                      is 9, the condition is out of date with respect to the current
-                      state of the instance.
-                    format: int64
-                    minimum: 0
-                    type: integer
-                  reason:
-                    description: reason contains a programmatic identifier indicating
-                      the reason for the condition's last transition. Producers of
-                      specific condition types may define expected values and meanings
-                      for this field, and whether the values are considered a guaranteed
-                      API. The value should be a CamelCase string. This field may
-                      not be empty.
-                    maxLength: 1024
-                    minLength: 1
-                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
-                    type: string
-                  status:
-                    description: status of the condition, one of True, False, Unknown.
-                    enum:
-                    - "True"
-                    - "False"
-                    - Unknown
-                    type: string
-                  type:
-                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      --- Many .condition.type values are consistent across resources
-                      like Available, but because arbitrary conditions can be useful
-                      (see .node.status.conditions), the ability to deconflict is
-                      important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
-                    maxLength: 316
-                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
-                    type: string
-                required:
-                - lastTransitionTime
-                - message
-                - reason
-                - status
-                - type
-                type: object
-              type: array
-            destinationReachable:
-              description: DestinationReachable is true when the hub can list the
-                destination API.
-              type: boolean
-            message:
-              type: string
-            observedGeneration:
-              format: int64
-              type: integer
-            phase:
-              description: ClusterPairPhase is a high-level pairing health.
-              type: string
-            sourceReachable:
-              description: SourceReachable is true when the hub can list the source
-                API.
-              type: boolean
-          type: object
-      type: object
-  version: v1alpha1
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.source.name
+      name: Source
+      type: string
+    - jsonPath: .spec.destination.name
+      name: Destination
+      type: string
+    - jsonPath: .spec.transport
+      name: Transport
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ClusterPair binds two Kubernetes clusters for replication, restore,
+          and cutover.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ClusterPairSpec pairs a source cluster with a destination
+              cluster.
+            properties:
+              destination:
+                description: ClusterRef identifies a Kubernetes cluster the hub can
+                  reach.
+                properties:
+                  kubeconfigSecret:
+                    description: |-
+                      KubeconfigSecret is a Secret containing a kubeconfig used to
+                      reach this cluster. Empty means "the cluster this controller runs on".
+                    properties:
+                      key:
+                        description: Key defaults to "kubeconfig".
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Empty means the hub
+                          namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  name:
+                    description: Name is a stable identifier used in logs and status
+                      (not a K8s name).
+                    type: string
+                  objectStore:
+                    description: |-
+                      ObjectStore is an optional bucket prefix used as the rclone hop and
+                      as the default backup artifact location for this cluster.
+                    properties:
+                      credentialsSecret:
+                        description: 'CredentialsSecret holds access keys. Keys: accessKey,
+                          secretKey, optional sessionToken.'
+                        properties:
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      region:
+                        description: Region is required by some providers.
+                        type: string
+                      url:
+                        description: URL is s3://bucket/prefix, gs://bucket/prefix,
+                          or an S3-compatible endpoint URL.
+                        type: string
+                    required:
+                    - url
+                    type: object
+                required:
+                - name
+                type: object
+              snapshotClassMap:
+                additionalProperties:
+                  type: string
+                description: SnapshotClassMap remaps VolumeSnapshotClass names across
+                  clusters.
+                type: object
+              source:
+                description: ClusterRef identifies a Kubernetes cluster the hub can
+                  reach.
+                properties:
+                  kubeconfigSecret:
+                    description: |-
+                      KubeconfigSecret is a Secret containing a kubeconfig used to
+                      reach this cluster. Empty means "the cluster this controller runs on".
+                    properties:
+                      key:
+                        description: Key defaults to "kubeconfig".
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Empty means the hub
+                          namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  name:
+                    description: Name is a stable identifier used in logs and status
+                      (not a K8s name).
+                    type: string
+                  objectStore:
+                    description: |-
+                      ObjectStore is an optional bucket prefix used as the rclone hop and
+                      as the default backup artifact location for this cluster.
+                    properties:
+                      credentialsSecret:
+                        description: 'CredentialsSecret holds access keys. Keys: accessKey,
+                          secretKey, optional sessionToken.'
+                        properties:
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      region:
+                        description: Region is required by some providers.
+                        type: string
+                      url:
+                        description: URL is s3://bucket/prefix, gs://bucket/prefix,
+                          or an S3-compatible endpoint URL.
+                        type: string
+                    required:
+                    - url
+                    type: object
+                required:
+                - name
+                type: object
+              storageClassMap:
+                additionalProperties:
+                  type: string
+                description: StorageClassMap remaps source StorageClass names to destination
+                  names.
+                type: object
+              transport:
+                default: ObjectStore
+                description: Transport selects Direct (cluster-to-cluster) or ObjectStore
+                  hop.
+                enum:
+                - Direct
+                - ObjectStore
+                type: string
+            required:
+            - destination
+            - source
+            type: object
+          status:
+            description: ClusterPairStatus is the observed state of a ClusterPair.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              destinationReachable:
+                description: DestinationReachable is true when the hub can list the
+                  destination API.
+                type: boolean
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: ClusterPairPhase is a high-level pairing health.
+                type: string
+              sourceReachable:
+                description: SourceReachable is true when the hub can list the source
+                  API.
+                type: boolean
+            type: object
+        type: object
     served: true
     storage: true
-status:
-  acceptedNames:
-    kind: ""
-    plural: ""
-  conditions: []
-  storedVersions: []
+    subresources:
+      status: {}

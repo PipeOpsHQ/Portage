@@ -1,26 +1,11 @@
-
 ---
-apiVersion: apiextensions.k8s.io/v1beta1
+apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.3.0
-  creationTimestamp: null
+    controller-gen.kubebuilder.io/version: v0.18.0
   name: actions.portage.io
 spec:
-  additionalPrinterColumns:
-  - JSONPath: .spec.type
-    name: Type
-    type: string
-  - JSONPath: .spec.policyRef
-    name: Policy
-    type: string
-  - JSONPath: .status.phase
-    name: Phase
-    type: string
-  - JSONPath: .metadata.creationTimestamp
-    name: Age
-    type: date
   group: portage.io
   names:
     kind: Action
@@ -30,279 +15,281 @@ spec:
     - pact
     singular: action
   scope: Namespaced
-  subresources:
-    status: {}
-  validation:
-    openAPIV3Schema:
-      description: Action is one execution of a Policy (backup, restore, replicate,
-        or cutover). Succeeded is only written after every stateful workload is Ready
-        and its class probe passed. Mover CR success is not sufficient.
-      properties:
-        apiVersion:
-          description: 'APIVersion defines the versioned schema of this representation
-            of an object. Servers should convert recognized schemas to the latest
-            internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
-          type: string
-        kind:
-          description: 'Kind is a string value representing the REST resource this
-            object represents. Servers may infer this from the endpoint the client
-            submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
-          type: string
-        metadata:
-          type: object
-        spec:
-          description: ActionSpec is a single run of backup, restore, replicate, or
-            cutover.
-          properties:
-            dryRun:
-              description: DryRun runs preflight and classification only.
-              type: boolean
-            freezeTimeout:
-              description: FreezeTimeout bounds source write-pause during Restore/Cutover.
-              type: string
-            policyRef:
-              description: PolicyRef is the namespaced Policy this action executes.
-              type: string
-            rollback:
-              description: Rollback unfreezes source and fires the traffic rollback
-                hook.
-              type: boolean
-            snapshotID:
-              description: SnapshotID optionally pins restore to a specific artifact.
-              type: string
-            type:
-              description: Type of action.
-              enum:
-              - Backup
-              - Restore
-              - Replicate
-              - Cutover
-              type: string
-          required:
-          - policyRef
-          - type
-          type: object
-        status:
-          description: ActionStatus is observed execution.
-          properties:
-            attestation:
-              description: Attestation is the signed-ish record that an Action actually
-                worked.
-              properties:
-                artifactIDs:
-                  description: ArtifactIDs are restic snapshot IDs, VolSync latestImage,
-                    dump hashes, …
-                  items:
-                    type: string
-                  type: array
-                recordedAt:
-                  description: RecordedAt is when probes passed.
-                  format: date-time
-                  type: string
-                source:
-                  description: Source is which component wrote this (controller, cli,
-                    webhook).
-                  type: string
-                workloads:
-                  description: Workloads lists probe results copied at success time.
-                  items:
-                    description: WorkloadActionStatus is per-workload progress inside
-                      an Action.
-                    properties:
-                      class:
-                        description: WorkloadClass is how Portage treats a discovered
-                          workload.
-                        enum:
-                        - Stateless
-                        - GenericPVC
-                        - SQLLogical
-                        - KVLogical
-                        - SearchFS
-                        - QueueDurable
-                        - ObjectStore
-                        - OperatorManaged
-                        - UnknownStateful
-                        type: string
-                      engine:
-                        type: string
-                      healed:
-                        items:
-                          type: string
-                        type: array
-                      key:
-                        description: Key is namespace/kind/name.
-                        type: string
-                      message:
-                        type: string
-                      name:
-                        type: string
-                      probe:
-                        description: Probe is the class-specific data probe (pg_isready,
-                          PING, HTTP, …). Empty until the probe has run.
-                        type: string
-                      probeOK:
-                        description: ProbeOK is true only when the class probe passed.
-                          Action must not Succeeded while any stateful workload has
-                          ProbeOK=false.
-                        type: boolean
-                      ready:
-                        description: Ready is Kubernetes Ready (Deployment/STS available,
-                          Pod Ready).
-                        type: boolean
-                    required:
-                    - class
-                    - name
-                    - ready
-                    type: object
-                  type: array
-              required:
-              - recordedAt
-              - source
-              type: object
-            completionTime:
-              format: date-time
-              type: string
-            conditions:
-              items:
-                description: "Condition contains details for one aspect of the current
-                  state of this API Resource. --- This struct is intended for direct
-                  use as an array at the field path .status.conditions.  For example,
-                  \n \ttype FooStatus struct{ \t    // Represents the observations
-                  of a foo's current state. \t    // Known .status.conditions.type
-                  are: \"Available\", \"Progressing\", and \"Degraded\" \t    // +patchMergeKey=type
-                  \t    // +patchStrategy=merge \t    // +listType=map \t    // +listMapKey=type
-                  \t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
-                  patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`
-                  \n \t    // other fields \t}"
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.policyRef
+      name: Policy
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Action is one execution of a Policy (backup, restore, replicate, or cutover).
+          Succeeded is only written after every stateful workload is Ready and its
+          class probe passed. Mover CR success is not sufficient.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ActionSpec is a single run of backup, restore, replicate,
+              or cutover.
+            properties:
+              dryRun:
+                description: DryRun runs preflight and classification only.
+                type: boolean
+              freezeTimeout:
+                description: FreezeTimeout bounds source write-pause during Restore/Cutover.
+                type: string
+              policyRef:
+                description: PolicyRef is the namespaced Policy this action executes.
+                type: string
+              rollback:
+                description: Rollback unfreezes source and fires the traffic rollback
+                  hook.
+                type: boolean
+              snapshotID:
+                description: SnapshotID optionally pins restore to a specific artifact.
+                type: string
+              type:
+                description: Type of action.
+                enum:
+                - Backup
+                - Restore
+                - Replicate
+                - Cutover
+                type: string
+            required:
+            - policyRef
+            - type
+            type: object
+          status:
+            description: ActionStatus is observed execution.
+            properties:
+              attestation:
+                description: Attestation is the signed-ish record that an Action actually
+                  worked.
                 properties:
-                  lastTransitionTime:
-                    description: lastTransitionTime is the last time the condition
-                      transitioned from one status to another. This should be when
-                      the underlying condition changed.  If that is not known, then
-                      using the time when the API field changed is acceptable.
-                    format: date-time
-                    type: string
-                  message:
-                    description: message is a human readable message indicating details
-                      about the transition. This may be an empty string.
-                    maxLength: 32768
-                    type: string
-                  observedGeneration:
-                    description: observedGeneration represents the .metadata.generation
-                      that the condition was set based upon. For instance, if .metadata.generation
-                      is currently 12, but the .status.conditions[x].observedGeneration
-                      is 9, the condition is out of date with respect to the current
-                      state of the instance.
-                    format: int64
-                    minimum: 0
-                    type: integer
-                  reason:
-                    description: reason contains a programmatic identifier indicating
-                      the reason for the condition's last transition. Producers of
-                      specific condition types may define expected values and meanings
-                      for this field, and whether the values are considered a guaranteed
-                      API. The value should be a CamelCase string. This field may
-                      not be empty.
-                    maxLength: 1024
-                    minLength: 1
-                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
-                    type: string
-                  status:
-                    description: status of the condition, one of True, False, Unknown.
-                    enum:
-                    - "True"
-                    - "False"
-                    - Unknown
-                    type: string
-                  type:
-                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      --- Many .condition.type values are consistent across resources
-                      like Available, but because arbitrary conditions can be useful
-                      (see .node.status.conditions), the ability to deconflict is
-                      important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
-                    maxLength: 316
-                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
-                    type: string
-                required:
-                - lastTransitionTime
-                - message
-                - reason
-                - status
-                - type
-                type: object
-              type: array
-            message:
-              type: string
-            observedGeneration:
-              format: int64
-              type: integer
-            phase:
-              description: ActionPhase is the state machine. Succeeded is only valid
-                after Ready+probe.
-              type: string
-            startTime:
-              format: date-time
-              type: string
-            workloads:
-              items:
-                description: WorkloadActionStatus is per-workload progress inside
-                  an Action.
-                properties:
-                  class:
-                    description: WorkloadClass is how Portage treats a discovered
-                      workload.
-                    enum:
-                    - Stateless
-                    - GenericPVC
-                    - SQLLogical
-                    - KVLogical
-                    - SearchFS
-                    - QueueDurable
-                    - ObjectStore
-                    - OperatorManaged
-                    - UnknownStateful
-                    type: string
-                  engine:
-                    type: string
-                  healed:
+                  artifactIDs:
+                    description: ArtifactIDs are restic snapshot IDs, VolSync latestImage,
+                      dump hashes, …
                     items:
                       type: string
                     type: array
-                  key:
-                    description: Key is namespace/kind/name.
+                  recordedAt:
+                    description: RecordedAt is when probes passed.
+                    format: date-time
                     type: string
-                  message:
+                  source:
+                    description: Source is which component wrote this (controller,
+                      cli, webhook).
                     type: string
-                  name:
-                    type: string
-                  probe:
-                    description: Probe is the class-specific data probe (pg_isready,
-                      PING, HTTP, …). Empty until the probe has run.
-                    type: string
-                  probeOK:
-                    description: ProbeOK is true only when the class probe passed.
-                      Action must not Succeeded while any stateful workload has ProbeOK=false.
-                    type: boolean
-                  ready:
-                    description: Ready is Kubernetes Ready (Deployment/STS available,
-                      Pod Ready).
-                    type: boolean
+                  workloads:
+                    description: Workloads lists probe results copied at success time.
+                    items:
+                      description: WorkloadActionStatus is per-workload progress inside
+                        an Action.
+                      properties:
+                        class:
+                          description: WorkloadClass is how Portage treats a discovered
+                            workload.
+                          enum:
+                          - Stateless
+                          - GenericPVC
+                          - SQLLogical
+                          - KVLogical
+                          - SearchFS
+                          - QueueDurable
+                          - ObjectStore
+                          - OperatorManaged
+                          - UnknownStateful
+                          type: string
+                        engine:
+                          type: string
+                        healed:
+                          items:
+                            type: string
+                          type: array
+                        key:
+                          description: Key is namespace/kind/name.
+                          type: string
+                        message:
+                          type: string
+                        name:
+                          type: string
+                        probe:
+                          description: |-
+                            Probe is the class-specific data probe (pg_isready, PING, HTTP, …).
+                            Empty until the probe has run.
+                          type: string
+                        probeOK:
+                          description: |-
+                            ProbeOK is true only when the class probe passed. Action must not
+                            Succeeded while any stateful workload has ProbeOK=false.
+                          type: boolean
+                        ready:
+                          description: Ready is Kubernetes Ready (Deployment/STS available,
+                            Pod Ready).
+                          type: boolean
+                      required:
+                      - class
+                      - name
+                      - ready
+                      type: object
+                    type: array
                 required:
-                - class
-                - name
-                - ready
+                - recordedAt
+                - source
                 type: object
-              type: array
-          type: object
-      type: object
-  version: v1alpha1
-  versions:
-  - name: v1alpha1
+              completionTime:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: ActionPhase is the state machine. Succeeded is only valid
+                  after Ready+probe.
+                type: string
+              startTime:
+                format: date-time
+                type: string
+              workloads:
+                items:
+                  description: WorkloadActionStatus is per-workload progress inside
+                    an Action.
+                  properties:
+                    class:
+                      description: WorkloadClass is how Portage treats a discovered
+                        workload.
+                      enum:
+                      - Stateless
+                      - GenericPVC
+                      - SQLLogical
+                      - KVLogical
+                      - SearchFS
+                      - QueueDurable
+                      - ObjectStore
+                      - OperatorManaged
+                      - UnknownStateful
+                      type: string
+                    engine:
+                      type: string
+                    healed:
+                      items:
+                        type: string
+                      type: array
+                    key:
+                      description: Key is namespace/kind/name.
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    probe:
+                      description: |-
+                        Probe is the class-specific data probe (pg_isready, PING, HTTP, …).
+                        Empty until the probe has run.
+                      type: string
+                    probeOK:
+                      description: |-
+                        ProbeOK is true only when the class probe passed. Action must not
+                        Succeeded while any stateful workload has ProbeOK=false.
+                      type: boolean
+                    ready:
+                      description: Ready is Kubernetes Ready (Deployment/STS available,
+                        Pod Ready).
+                      type: boolean
+                  required:
+                  - class
+                  - name
+                  - ready
+                  type: object
+                type: array
+            type: object
+        type: object
     served: true
     storage: true
-status:
-  acceptedNames:
-    kind: ""
-    plural: ""
-  conditions: []
-  storedVersions: []
+    subresources:
+      status: {}
