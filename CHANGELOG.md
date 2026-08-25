@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Policy.spec.clusterObjects`: live API-graph backup / replicate / restore
+  (dest Get is the probe; not an etcd dump)
+
 ## [0.1.0] - 2026-08-25
 
 ### Added

@@ -73,6 +73,14 @@ func Evaluate(in Input) movers.Artifact {
 		art.Useful = true
 		art.Message = "stateless"
 		return art
+	case portagev1alpha1.ClassClusterObjects:
+		if art.SizeBytes == 0 && len(in.Files) == 0 {
+			art.Message = "no object-graph snapshot"
+			return art
+		}
+		art.Useful = true
+		art.Message = "object-graph snapshot"
+		return art
 	case portagev1alpha1.ClassSQLLogical, portagev1alpha1.ClassKVLogical:
 		return logical(art, in)
 	default:

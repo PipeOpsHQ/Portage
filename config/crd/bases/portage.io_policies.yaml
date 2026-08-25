@@ -73,6 +73,33 @@ spec:
                     description: RPO is the target backup interval, e.g. "24h".
                     type: string
                 type: object
+              clusterObjects:
+                description: |-
+                  ClusterObjects live-syncs / backups / restores Kubernetes API objects
+                  that are not already in the workload graph (ConfigMaps, Secrets,
+                  Services, RBAC, CRDs, and unknown CRs). Same principles: sanitize dest,
+                  unknown stays in the graph, Succeeded only after dest attests.
+                properties:
+                  enabled:
+                    description: Enabled turns on object-graph Backup / Replicate
+                      / Restore.
+                    type: boolean
+                  excludeNamespaces:
+                    description: ExcludeNamespaces is added to the built-in skip list
+                      (kube-system, …).
+                    items:
+                      type: string
+                    type: array
+                  includeClusterScoped:
+                    default: true
+                    description: |-
+                      IncludeClusterScoped adds Namespaces (selector), ClusterRoles/Bindings,
+                      and other cluster-scoped APIs (ClusterIssuers, …). CRDs are always
+                      included when Enabled — unknown CRs cannot restore without them.
+                      Nodes, PVs, StorageClasses, CSI, and admission webhooks stay dest-local.
+                      Defaults to true.
+                    type: boolean
+                type: object
               clusterPair:
                 description: |-
                   ClusterPair is a cluster-scoped pair. Empty means in-cluster
@@ -314,6 +341,7 @@ spec:
                       - ObjectStore
                       - OperatorManaged
                       - UnknownStateful
+                      - ClusterObjects
                       type: string
                     engine:
                       type: string

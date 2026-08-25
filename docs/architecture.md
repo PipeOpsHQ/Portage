@@ -9,6 +9,10 @@ It is not a Velero clone. Backup tools copy objects and bytes. Portage is the
 control plane that decides *what* to copy, *how* (plugin movers), *how to
 shape* dest manifests (plugin renderers), and *when the job is actually done*.
 
+Full-cluster **object** restore is the same contract applied to the API graph:
+live list, dest sanitize, unknown CRs stay, dest Get is the probe. It is not
+an etcd dump.
+
 ## Why this exists
 
 - CSI has no portable multi-cloud volume replication. EBS cannot replicate to

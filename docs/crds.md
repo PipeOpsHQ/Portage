@@ -53,6 +53,10 @@ spec:
     neverOverwriteNewer: true
   renderer:
     kind: Sanitize   # Sanitize | Git | Webhook
+  clusterObjects:
+    enabled: true              # live API graph (not etcd); CRDs always
+    includeClusterScoped: true # Namespaces, ClusterRoles, cluster-scoped CRs
+    excludeNamespaces: []
   cutover:
     trafficHook: https://hooks.example.com/portage/switch
     holdSource: 24h

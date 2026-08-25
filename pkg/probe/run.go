@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
+	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
 	"github.com/PipeOpsHQ/portage/pkg/movers"
@@ -31,6 +32,9 @@ import (
 // Run executes the class probe in a Ready pod. Kubernetes Ready is checked
 // by the caller; this is the data probe (pg_isready, PING, …).
 func Run(ctx context.Context, kube kubernetes.Interface, execer kubeexec.Interface, w classify.Workload) movers.ProbeResult {
+	if w.Class == portagev1alpha1.ClassClusterObjects {
+		return movers.ProbeResult{OK: false, Message: "cluster objects require dest Get (clusterobjects.Attest)"}
+	}
 	spec := Default(w)
 	if len(spec.Command) == 0 {
 		return movers.ProbeResult{OK: true, Message: spec.Message}

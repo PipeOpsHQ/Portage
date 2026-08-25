@@ -37,6 +37,26 @@ kubectl -n tenant-a get action backup-1 -w
 `Policy.spec.restore.auto: true` creates one `restore-auto-<policy>` Action when
 a covered PVC is gone **and** backups are useful. Bound PVCs are not overwritten.
 
+## Cluster objects (API graph)
+
+Opt in with `Policy.spec.clusterObjects.enabled: true`. This is **not** Velero
+etcd backup. The Kubernetes API is the data plane:
+
+1. **Backup** — live list → sanitize → JSON snapshot in the object store.
+2. **Restore** — snapshot → sanitize → dest create-or-update. `Succeeded` only
+   after dest Get (CRDs: `Established`).
+3. **Replicate** — same live list on every reconcile, dest update (active
+   restoration). CatchingUp until dest Get.
+
+**CRDs are always in the graph** when this is enabled — unknown CRs cannot
+restore without them. Other cluster-scoped APIs (Namespaces in the selector,
+ClusterRoles/Bindings, ClusterIssuers, …) are included by default
+(`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, admission
+webhooks, and `system:` RBAC stay dest-local.
+
+STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
+`403` list is skipped (not silently dropped from a GVR we could read).
+
 ## Probes
 
 | Engine | Probe |
@@ -46,6 +66,7 @@ a covered PVC is gone **and** backups are useful. Bound PVCs are not overwritten
 | redis / valkey / dragonfly | `PING` |
 | mongo | `hello` |
 | GenericPVC | volume-mounted / HTTP |
+| ClusterObjects | dest Get (CRD Established) |
 
 ## Next
 

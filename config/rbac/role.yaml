@@ -1,23 +1,17 @@
-
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: portage-manager-role
 rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - configmaps
   - persistentvolumeclaims
+  - secrets
+  - serviceaccounts
+  - services
   verbs:
   - create
   - get
@@ -28,6 +22,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - pods
   verbs:
   - get
@@ -40,12 +35,26 @@ rules:
   verbs:
   - create
 - apiGroups:
-  - ""
+  - '*'
   resources:
-  - secrets
+  - '*'
   verbs:
+  - create
   - get
   - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - apps
@@ -61,58 +70,22 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps
+  - networking.k8s.io
   resources:
-  - daemonsets
-  - deployments
-  - statefulsets
+  - ingresses
+  - networkpolicies
   verbs:
+  - create
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - portage.io
   resources:
   - actions
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - portage.io
-  resources:
-  - actions/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - portage.io
-  resources:
   - clusterpairs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - portage.io
-  resources:
-  - clusterpairs/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - portage.io
-  resources:
   - policies
   verbs:
   - create
@@ -125,17 +98,33 @@ rules:
 - apiGroups:
   - portage.io
   resources:
-  - policies/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - portage.io
-  resources:
+  - actions/status
+  - clusterpairs/status
   - policies/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - portage.io
+  resources:
+  - policies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - snapshot.storage.k8s.io
   resources:

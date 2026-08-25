@@ -65,6 +65,26 @@ func TestReadyWithoutPgIsReadyDoesNotSucceed(t *testing.T) {
 	}
 }
 
+func TestClusterObjectsWithoutDestGetDoesNotSucceed(t *testing.T) {
+	t.Parallel()
+	key := "ns/ObjectGraph/cluster-objects"
+	inv := []classify.Workload{{
+		Namespace: "ns", Kind: "ObjectGraph", Name: "cluster-objects",
+		Class: portagev1alpha1.ClassClusterObjects,
+	}}
+	got := Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhaseWaitingReady}, Facts{
+		Inventory:  inv,
+		Useful:     map[string]bool{key: true},
+		Rehydrated: map[string]bool{key: true},
+		Ready:      map[string]bool{key: true},
+		Probes:     map[string]movers.ProbeResult{key: {OK: false, Message: "1/1 dest objects missing"}},
+		Now:        time.Now(),
+	})
+	if got.Phase == portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatal("object apply without dest Get must not Succeeded")
+	}
+}
+
 func TestAttestRefusesSucceededWithoutProbe(t *testing.T) {
 	t.Parallel()
 	got := Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhaseAttesting}, Facts{

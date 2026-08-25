@@ -126,6 +126,7 @@ spec:
                           - ObjectStore
                           - OperatorManaged
                           - UnknownStateful
+                          - ClusterObjects
                           type: string
                         engine:
                           type: string
@@ -253,6 +254,7 @@ spec:
                       - ObjectStore
                       - OperatorManaged
                       - UnknownStateful
+                      - ClusterObjects
                       type: string
                     engine:
                       type: string

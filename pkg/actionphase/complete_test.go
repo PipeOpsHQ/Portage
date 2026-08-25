@@ -52,6 +52,20 @@ func TestCanSucceed(t *testing.T) {
 			}},
 			ok: false,
 		},
+		{
+			name: "cluster-objects apply without dest Get",
+			in: []portagev1alpha1.WorkloadActionStatus{{
+				Name: "cluster-objects", Class: portagev1alpha1.ClassClusterObjects, Ready: true, ProbeOK: false,
+			}},
+			ok: false,
+		},
+		{
+			name: "cluster-objects dest Get",
+			in: []portagev1alpha1.WorkloadActionStatus{{
+				Name: "cluster-objects", Class: portagev1alpha1.ClassClusterObjects, Ready: true, ProbeOK: true,
+			}},
+			ok: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

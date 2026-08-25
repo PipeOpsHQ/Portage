@@ -36,6 +36,7 @@ import (
 	"github.com/PipeOpsHQ/portage/pkg/apply"
 	"github.com/PipeOpsHQ/portage/pkg/backup"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
+	"github.com/PipeOpsHQ/portage/pkg/clusterobjects"
 	"github.com/PipeOpsHQ/portage/pkg/clusters"
 	"github.com/PipeOpsHQ/portage/pkg/cutover"
 	"github.com/PipeOpsHQ/portage/pkg/dump"
@@ -116,7 +117,12 @@ func (r *ActionReconciler) now() time.Time {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets;replicasets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses,verbs=get;list;watch
 
@@ -162,6 +168,7 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		logger.Error(err, "classify")
 		return ctrl.Result{}, err
 	}
+	inv = withClusterObjects(pol, inv)
 
 	if act.Status.StartTime == nil {
 		t := metav1.NewTime(r.now())
@@ -211,11 +218,27 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{RequeueAfter: res.RequeueAfter}, nil
 }
 
-func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Action, pol *portagev1alpha1.Policy, _ *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
+func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
 	snaps := snapshots.Client{Dynamic: ep.Source.Dynamic}
 	arts := make([]portagev1alpha1.ArtifactHealth, 0, len(inv.Workloads))
 	for _, w := range inv.Workloads {
 		if w.Class == portagev1alpha1.ClassStateless {
+			continue
+		}
+		if clusterobjects.Is(w) {
+			key, n, usefulDump, msg, err := r.captureClusterObjects(ctx, pol, pair, ep, w)
+			if err != nil {
+				arts = append(arts, backup.FromArtifact(w, false, 0, "cluster-objects: "+err.Error(), ""))
+				continue
+			}
+			ev := usefulness.ForWorkload(w, usefulness.Input{
+				SizeBytes: n,
+				Files:     []usefulness.File{{Path: "objects.json", SizeBytes: n}},
+			})
+			if msg != "" {
+				ev.Message = msg
+			}
+			arts = append(arts, backup.FromArtifact(w, ev.Useful && usefulDump, ev.SizeBytes, ev.Message, key))
 			continue
 		}
 		_, _ = snaps.CreateForWorkload(ctx, w, "", r.now())
@@ -295,6 +318,9 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 	if act.Status.Phase == portagev1alpha1.ActionPhaseRehydrating || act.Status.Phase == portagev1alpha1.ActionPhaseApplying || act.Status.Phase == "" || act.Status.Phase == portagev1alpha1.ActionPhasePreflight {
 		var rendered []*unstructured.Unstructured
 		for _, w := range inv.Workloads {
+			if clusterobjects.Is(w) {
+				continue
+			}
 			objs, err := export.Workload(ctx, ep.Source.Kube, w)
 			if err != nil {
 				continue
@@ -317,6 +343,23 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 		if w.Class == portagev1alpha1.ClassStateless {
 			facts.Useful[w.Key()] = true
 			facts.Rehydrated[w.Key()] = true
+			continue
+		}
+		if clusterobjects.Is(w) {
+			if a, ok := artByKey[w.Key()]; ok && a.Useful && a.ArtifactID != "" {
+				ok, msg, err := r.restoreClusterObjects(ctx, pair, ep, a.ArtifactID)
+				if err != nil {
+					facts.Rehydrated[w.Key()] = false
+					facts.UsefulMessage[w.Key()] = err.Error()
+				} else {
+					facts.Rehydrated[w.Key()] = true
+					facts.Ready[w.Key()] = ok
+					facts.Probes[w.Key()] = movers.ProbeResult{OK: ok, Message: msg}
+					if !ok {
+						facts.UsefulMessage[w.Key()] = msg
+					}
+				}
+			}
 			continue
 		}
 		rehydrated := true
@@ -383,6 +426,20 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 			workloadsStatus = append(workloadsStatus, st)
 			continue
 		}
+		if clusterobjects.Is(w) {
+			ok, msg, err := r.syncClusterObjectsLive(ctx, pol, pair, ep)
+			if err != nil {
+				failed = err.Error()
+				st.Message = failed
+			} else {
+				st.Ready, st.ProbeOK, st.Probe, st.Message = ok, ok, msg, msg
+				if !ok && failed == "" {
+					failed = "waiting for replica sync: " + msg
+				}
+			}
+			workloadsStatus = append(workloadsStatus, st)
+			continue
+		}
 		override := ""
 		if pol.Spec.MoverOverrides != nil {
 			override = pol.Spec.MoverOverrides[string(w.Class)]
@@ -441,6 +498,17 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 
 	frozen, lagZero, promoted := true, true, true
 	for _, w := range inv.Stateful() {
+		if clusterobjects.Is(w) {
+			ok, msg, err := r.syncClusterObjectsLive(ctx, pol, pair, ep)
+			if err != nil {
+				facts.Ready[w.Key()] = false
+				facts.Probes[w.Key()] = movers.ProbeResult{OK: false, Message: err.Error()}
+				continue
+			}
+			facts.Ready[w.Key()] = ok
+			facts.Probes[w.Key()] = movers.ProbeResult{OK: ok, Message: msg}
+			continue
+		}
 		switch act.Status.Phase {
 		case "", portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight, portagev1alpha1.ActionPhaseQuiescing:
 			_ = workloads.Scale(ctx, ep.Source.Kube, w, 0)
@@ -482,6 +550,9 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 	if act.Status.Phase == portagev1alpha1.ActionPhaseQuiescing {
 		frozen = true
 		for _, w := range inv.Stateful() {
+			if clusterobjects.Is(w) {
+				continue
+			}
 			if !workloads.ScaledToZero(ctx, ep.Source.Kube, w) {
 				frozen = false
 			}
@@ -512,6 +583,9 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 		}
 		_ = hook.Rollback(ctx, traffic.Event{Action: "rollback", Policy: pol.Name, Source: src, Destination: dst})
 		for _, w := range inv.Stateful() {
+			if clusterobjects.Is(w) {
+				continue
+			}
 			n := int32(1)
 			if sts, err := ep.Source.Kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{}); err == nil {
 				n = workloads.OriginalReplicas(sts.Annotations)

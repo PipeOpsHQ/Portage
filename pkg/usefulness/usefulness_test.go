@@ -90,6 +90,22 @@ func TestEvaluateGenericPVCSnapshotIsUseful(t *testing.T) {
 	}
 }
 
+func TestEvaluateClusterObjectsSnapshotIsUseful(t *testing.T) {
+	t.Parallel()
+	got := Evaluate(Input{
+		Class:     portagev1alpha1.ClassClusterObjects,
+		SizeBytes: 128,
+		Files:     []File{{Path: "objects.json", SizeBytes: 128}},
+	})
+	if !got.Useful {
+		t.Fatalf("object-graph snapshot: %+v", got)
+	}
+	empty := Evaluate(Input{Class: portagev1alpha1.ClassClusterObjects})
+	if empty.Useful {
+		t.Fatal("missing object-graph snapshot must not be useful")
+	}
+}
+
 func TestEvaluateTinyVolumeNotUseful(t *testing.T) {
 	t.Parallel()
 	got := Evaluate(Input{

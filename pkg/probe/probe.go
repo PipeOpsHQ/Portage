@@ -49,6 +49,8 @@ func Default(w classify.Workload) Spec {
 	switch w.Class {
 	case portagev1alpha1.ClassStateless:
 		return Spec{Message: "k8s-ready"}
+	case portagev1alpha1.ClassClusterObjects:
+		return Spec{Message: "dest-get"}
 	default:
 		return Spec{Message: "volume-mounted"}
 	}

@@ -24,13 +24,14 @@ source cluster  ──replicate / restore──►  dest cluster
 | Multi-cloud PVC | full copy after snapshot | VolSync / engine replica / object-store dump |
 | Topology | copied (zone pins) | stripped / remapped |
 
-Use Velero for cluster-state backup. Use Portage to move applications and
-know they actually came up.
+Use Velero for cluster-state (etcd-style) backup. Use Portage to move
+applications — and, with `clusterObjects`, to live-sync the API graph with
+the same dest-Get completion gate.
 
 ## Three CRDs
 
 - **ClusterPair** — source + dest kubeconfigs, Direct or ObjectStore transport
-- **Policy** — backup / replicate / auto-restore / renderer / traffic hook
+- **Policy** — backup / replicate / auto-restore / renderer / clusterObjects / traffic hook
 - **Action** — one `Backup` \| `Restore` \| `Replicate` \| `Cutover`
 
 ## Go module

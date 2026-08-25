@@ -10,6 +10,7 @@ Portage walks StatefulSets, Deployments, DaemonSets, and leftover PVCs.
 | PVC, unknown image | GenericPVC |
 | PVC, no owner | UnknownStateful (still backed up) |
 | No PVC | Stateless (re-render only) |
+| `spec.clusterObjects.enabled` | ClusterObjects (API graph: CM/Secret/Service/RBAC/unknown CRs) |
 
 Unknown + disk is **in** the graph. Skipping it is how you ship 12 KiB of certs
 and call it a Postgres backup.
@@ -35,11 +36,28 @@ Transport:
 - `ObjectStore` (default) — dumps + VolSync rclone hop
 - `Direct` — VolSync rsyncTLS (clusters must peer)
 
+## Cluster objects are not etcd
+
+`Policy.spec.clusterObjects` live-syncs the Kubernetes **API graph** — ConfigMaps,
+Secrets, Services, RBAC, **CRDs**, and unknown CRs (namespaced and
+cluster-scoped). Portage does **not** dump etcd.
+Pods, ReplicaSets, nodes, PVs, and STS/Deploy/DS stay on the workload path.
+
+Same rules as volumes:
+
+- unknown CRs stay in the graph
+- dest is sanitized (UID/RV/status/zone pins, SA tokens, `kube-root-ca.crt`)
+- `Succeeded` only after **dest Get** (CRDs must be `Established`)
+- Replicate is live list → create-or-update dest (active restoration), not a
+  one-shot apply
+
+Disabled by default so workload e2e is unchanged until you opt in.
+
 ## Done means Ready + probe
 
 `Action` `Succeeded` is illegal unless every stateful workload is Ready **and**
-its class probe passed (`pg_isready`, `PING`, …). That is the Velero trap
-Portage exists to close.
+its class probe passed (`pg_isready`, `PING`, dest Get for the object graph).
+That is the Velero trap Portage exists to close.
 
 ## Next
 

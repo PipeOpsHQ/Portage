@@ -47,17 +47,21 @@ wait_psql() {
 }
 
 wait_action() {
-  local name=$1 want=$2
-  local tries=${3:-40}
+  wait_action_in pg "$@"
+}
+
+wait_action_in() {
+  local ns=$1 name=$2 want=$3
+  local tries=${4:-40}
   local i phase
   for i in $(seq 1 "$tries"); do
-    phase=$(kc -n pg get action "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    echo "  $name phase=${phase:-none}"
+    phase=$(kc -n "$ns" get action "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    echo "  $ns/$name phase=${phase:-none}"
     if [[ "$phase" == "$want" ]]; then
       return 0
     fi
     if [[ "$phase" == "Failed" && "$want" != "Failed" ]]; then
-      die "$name Failed: $(kc -n pg get action "$name" -o jsonpath='{.status.message}')"
+      die "$name Failed: $(kc -n "$ns" get action "$name" -o jsonpath='{.status.message}')"
     fi
     if [[ "$phase" == "Succeeded" && "$want" != "Succeeded" ]]; then
       die "$name Succeeded but wanted $want"
@@ -253,6 +257,116 @@ dest_rows=$(kd -n pg exec pg-0 -- psql -U postgres -tAc "SELECT count(*) FROM bl
 src_rows2=$(kc -n pg exec pg-0 -- psql -U postgres -tAc "SELECT count(*) FROM blob")
 [[ "${src_rows2// /}" == "32" ]] || die "source blob lost after restore"
 pass "restore dest=dst Ready+pg_isready with 32 blob rows (source intact)"
+
+# --- cluster objects: live API graph including CRDs, dest Get is the probe ---
+kc create ns apps || true
+kd create ns apps || true
+kc -n apps create configmap app-config --from-literal=k=v1 --dry-run=client -o yaml | kc apply -f -
+cat <<'EOF' | kc apply -f -
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.stable.example.com
+spec:
+  group: stable.example.com
+  scope: Namespaced
+  names:
+    plural: widgets
+    singular: widget
+    kind: Widget
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                k:
+                  type: string
+EOF
+kc wait --for=condition=Established crd/widgets.stable.example.com --timeout=60s
+cat <<'EOF' | kc apply -f -
+apiVersion: stable.example.com/v1
+kind: Widget
+metadata:
+  name: w1
+  namespace: apps
+spec:
+  k: v1
+EOF
+cat <<'EOF' | kc apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Policy
+metadata:
+  name: objects
+  namespace: apps
+spec:
+  clusterPair: kind-pair
+  selector:
+    namespaces: [apps]
+  backup:
+    enabled: true
+    requireUseful: true
+  clusterObjects:
+    enabled: true
+  renderer:
+    kind: Sanitize
+EOF
+cat <<'EOF' | kc apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: backup-objects
+  namespace: apps
+spec:
+  type: Backup
+  policyRef: objects
+EOF
+wait_action_in apps backup-objects Succeeded
+obj_art=$(kc -n apps get policy objects -o jsonpath='{.status.artifacts[0].artifactID}')
+[[ -n "$obj_art" ]] || die "object-graph backup missing ArtifactID"
+cat <<'EOF' | kc apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: restore-objects
+  namespace: apps
+spec:
+  type: Restore
+  policyRef: objects
+EOF
+wait_action_in apps restore-objects Succeeded 60
+kd -n apps get configmap app-config >/dev/null || die "dest missing ConfigMap after object restore"
+dest_k=$(kd -n apps get configmap app-config -o jsonpath='{.data.k}')
+[[ "$dest_k" == "v1" ]] || die "dest ConfigMap k=$dest_k want v1"
+kd get crd widgets.stable.example.com >/dev/null || die "dest missing CRD widgets.stable.example.com"
+kd wait --for=condition=Established crd/widgets.stable.example.com --timeout=60s || die "dest CRD not Established"
+dest_w=$(kd -n apps get widget w1 -o jsonpath='{.spec.k}' 2>/dev/null || true)
+[[ "$dest_w" == "v1" ]] || die "dest Widget spec.k=$dest_w want v1 (CRD+CR must restore)"
+pass "cluster-objects restore dest Get app-config k=v1 and Widget/CRD"
+
+kc -n apps create configmap app-config --from-literal=k=v2 --dry-run=client -o yaml | kc apply -f -
+kc -n apps patch widget w1 --type merge -p '{"spec":{"k":"v2"}}'
+cat <<'EOF' | kc apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: replicate-objects
+  namespace: apps
+spec:
+  type: Replicate
+  policyRef: objects
+EOF
+wait_action_in apps replicate-objects Succeeded 40
+dest_k=$(kd -n apps get configmap app-config -o jsonpath='{.data.k}')
+[[ "$dest_k" == "v2" ]] || die "dest ConfigMap not live-synced k=$dest_k want v2"
+dest_w=$(kd -n apps get widget w1 -o jsonpath='{.spec.k}' 2>/dev/null || true)
+[[ "$dest_w" == "v2" ]] || die "dest Widget not live-synced spec.k=$dest_w want v2"
+pass "cluster-objects replicate live-updated dest ConfigMap+Widget k=v2"
 
 # --- cutover freeze: source writes paused ---
 apply_action cutover-pg Cutover

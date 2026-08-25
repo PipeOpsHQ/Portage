@@ -17,6 +17,9 @@ spec:
     neverOverwriteNewer: true
   renderer:
     kind: Sanitize
+  # clusterObjects:
+  #   enabled: true          # live API graph (CM/Secret/Service/RBAC/CRDs/CRs)
+  #   includeClusterScoped: true
   # replicate + cutover require a ClusterPair
   # clusterPair: cloud-a-to-cloud-b
   # replicate:

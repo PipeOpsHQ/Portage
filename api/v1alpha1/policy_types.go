@@ -21,7 +21,7 @@ import (
 )
 
 // WorkloadClass is how Portage treats a discovered workload.
-// +kubebuilder:validation:Enum=Stateless;GenericPVC;SQLLogical;KVLogical;SearchFS;QueueDurable;ObjectStore;OperatorManaged;UnknownStateful
+// +kubebuilder:validation:Enum=Stateless;GenericPVC;SQLLogical;KVLogical;SearchFS;QueueDurable;ObjectStore;OperatorManaged;UnknownStateful;ClusterObjects
 type WorkloadClass string
 
 const (
@@ -34,6 +34,9 @@ const (
 	ClassObjectStore     WorkloadClass = "ObjectStore"
 	ClassOperatorManaged WorkloadClass = "OperatorManaged"
 	ClassUnknownStateful WorkloadClass = "UnknownStateful"
+	// ClassClusterObjects is the API-object graph (CM/Secret/Service/RBAC/CRs).
+	// Same completion rule: dest Get (and CRD Established) — not "apply returned".
+	ClassClusterObjects WorkloadClass = "ClusterObjects"
 )
 
 // RendererKind selects how destination manifests are produced.
@@ -165,9 +168,37 @@ type PolicySpec struct {
 	// +optional
 	Renderer RendererSpec `json:"renderer,omitempty"`
 
+	// ClusterObjects live-syncs / backups / restores Kubernetes API objects
+	// that are not already in the workload graph (ConfigMaps, Secrets,
+	// Services, RBAC, CRDs, and unknown CRs). Same principles: sanitize dest,
+	// unknown stays in the graph, Succeeded only after dest attests.
+	// +optional
+	ClusterObjects ClusterObjectsSpec `json:"clusterObjects,omitempty"`
+
 	// MoverOverrides pins a mover name per WorkloadClass (e.g. SQLLogical: postgres-streaming).
 	// +optional
 	MoverOverrides map[string]string `json:"moverOverrides,omitempty"`
+}
+
+// ClusterObjectsSpec is the object-graph half of a Policy. The Kubernetes
+// API is the data plane — Portage does not dump etcd.
+type ClusterObjectsSpec struct {
+	// Enabled turns on object-graph Backup / Replicate / Restore.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// IncludeClusterScoped adds Namespaces (selector), ClusterRoles/Bindings,
+	// and other cluster-scoped APIs (ClusterIssuers, …). CRDs are always
+	// included when Enabled — unknown CRs cannot restore without them.
+	// Nodes, PVs, StorageClasses, CSI, and admission webhooks stay dest-local.
+	// Defaults to true.
+	// +kubebuilder:default=true
+	// +optional
+	IncludeClusterScoped *bool `json:"includeClusterScoped,omitempty"`
+
+	// ExcludeNamespaces is added to the built-in skip list (kube-system, …).
+	// +optional
+	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
 }
 
 // PolicyPhase is rollup health for a Policy.

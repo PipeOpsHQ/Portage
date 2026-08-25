@@ -89,6 +89,7 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		_ = r.Status().Update(ctx, pol)
 		return ctrl.Result{}, err
 	}
+	inv = withClusterObjects(pol, inv)
 
 	items := make([]portagev1alpha1.InventoryItem, 0, len(inv.Workloads))
 	unclassified := 0
