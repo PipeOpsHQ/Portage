@@ -327,10 +327,13 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			}
 		}
 		if a, ok := artByKey[w.Key()]; ok && a.Useful && a.ArtifactID != "" {
-			if ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w); ready {
-				if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
-					facts.UsefulMessage[w.Key()] = rerr.Error()
-				}
+			// Logical dump must land. Empty dest postgres is Ready+pg_isready — that is the Velero trap.
+			ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w)
+			if !ready {
+				rehydrated = false
+			} else if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
+				rehydrated = false
+				facts.UsefulMessage[w.Key()] = rerr.Error()
 			}
 		} else if len(w.PVCNames) == 0 {
 			if a, ok := artByKey[w.Key()]; ok && a.Useful {

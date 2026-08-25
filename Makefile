@@ -44,6 +44,10 @@ tidy:
 docker-build:
 	docker build -t $(IMG) .
 
+.PHONY: e2e
+e2e:
+	bash hack/kind-e2e.sh
+
 .PHONY: docs
 docs:
 	pip install -q -r requirements-docs.txt
@@ -51,4 +55,4 @@ docs:
 
 .PHONY: help
 help:
-	@echo "fmt generate manifests build test vet tidy docker-build docs"
+	@echo "fmt generate manifests build test vet tidy docker-build e2e docs"
