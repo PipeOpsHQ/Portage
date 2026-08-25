@@ -52,6 +52,19 @@ func TestEvaluateSQLDumpIsUseful(t *testing.T) {
 	}
 }
 
+func TestEvaluateLiveDatadirDoesNotSaveTinyDump(t *testing.T) {
+	t.Parallel()
+	got := Evaluate(Input{
+		Class:     portagev1alpha1.ClassSQLLogical,
+		Engine:    "postgres",
+		SizeBytes: 40 << 20, // empty PGDATA is large
+		Files:     []File{{Path: "dump.sql", SizeBytes: 3000}},
+	})
+	if got.Useful {
+		t.Fatalf("tiny dump must not be rescued by live datadir size: %+v", got)
+	}
+}
+
 func TestEvaluateSnapshotAloneDoesNotSaveLogicalEngine(t *testing.T) {
 	t.Parallel()
 	got := Evaluate(Input{

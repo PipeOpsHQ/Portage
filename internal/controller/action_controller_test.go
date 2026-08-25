@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,7 +164,7 @@ func TestCutoverDoesNotSucceedWithoutProbe(t *testing.T) {
 	}
 }
 
-func TestBackupSucceedsWhenLiveSizeIsUseful(t *testing.T) {
+func TestBackupSucceedsWhenDumpIsUseful(t *testing.T) {
 	t.Parallel()
 	scheme := newScheme(t)
 	pol := &portagev1alpha1.Policy{
@@ -177,11 +178,12 @@ func TestBackupSucceedsWhenLiveSizeIsUseful(t *testing.T) {
 	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&portagev1alpha1.Action{}, &portagev1alpha1.Policy{}).
 		WithObjects(pol, act).Build()
+	dumpBody := strings.Repeat("-- row\n", 20_000) // > 64KiB
 	r := &ActionReconciler{
 		Client: c,
 		Scheme: scheme,
 		Kube:   k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
-		Exec:   &kubeexec.Fake{Results: map[string]kubeexec.Result{"ns/pg-0": {Stdout: "2097152\n"}}},
+		Exec:   &kubeexec.Fake{Results: map[string]kubeexec.Result{"ns/pg-0": {Stdout: dumpBody}}},
 		Now:    func() time.Time { return time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC) },
 	}
 	key := types.NamespacedName{Name: "bak", Namespace: "ns"}

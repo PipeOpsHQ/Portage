@@ -223,9 +223,18 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 		size := int64(0)
 		sizeMsg := ""
 		id := ""
-		if key, n, usefulDump, err := dump.Capture(ctx, ep.Source.Kube, ep.Source.Exec, r.store(), w, r.now()); err == nil && usefulDump {
-			size, id = n, key
-			sizeMsg = "object-store dump " + key
+		if len(dump.Command(w.Engine)) > 0 {
+			// Logical engines must be judged on the dump, not PGDATA `du`.
+			// Empty Postgres datadir is tens of MiB and is the Velero trap.
+			key, n, usefulDump, err := dump.Capture(ctx, ep.Source.Kube, ep.Source.Exec, r.store(), w, r.now())
+			if err != nil {
+				sizeMsg = err.Error()
+			} else {
+				size, id = n, key
+				if usefulDump {
+					sizeMsg = "object-store dump " + key
+				}
+			}
 		} else if ep.Source.Exec != nil {
 			if n, msg, err := probe.LiveBytes(ctx, ep.Source.Kube, ep.Source.Exec, w); err == nil {
 				size, sizeMsg = n, msg
