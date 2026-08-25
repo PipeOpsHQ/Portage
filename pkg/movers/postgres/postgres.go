@@ -120,13 +120,14 @@ func (m Mover) Quiesce(ctx context.Context, w classify.Workload) error {
 }
 
 func (m Mover) Promote(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) error {
-	if m.Exec == nil || m.Kube == nil {
-		return fmt.Errorf("postgres-streaming: kube/exec required to promote")
+	dest := m.destKube()
+	if m.Exec == nil || dest == nil {
+		return fmt.Errorf("postgres-streaming: dest kube/exec required to promote")
 	}
-	if err := workloads.Scale(ctx, m.Kube, w, 1); err != nil {
+	if err := workloads.Scale(ctx, dest, w, 1); err != nil {
 		return err
 	}
-	pod, container, err := workloads.FirstReadyPod(ctx, m.Kube, w)
+	pod, container, err := workloads.FirstReadyPod(ctx, dest, w)
 	if err != nil {
 		return fmt.Errorf("promote: %w", err)
 	}
@@ -134,27 +135,45 @@ func (m Mover) Promote(ctx context.Context, w classify.Workload, _ movers.Cluste
 	return err
 }
 
-func (m Mover) Probe(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) (movers.ProbeResult, error) {
-	if m.Exec == nil || m.Kube == nil {
-		return movers.ProbeResult{OK: false, Message: "execer not configured"}, nil
+func (m Mover) destKube() kubernetes.Interface {
+	if m.Dest != nil {
+		return m.Dest
 	}
-	pod, container, err := workloads.FirstReadyPod(ctx, m.Kube, w)
-	if err != nil {
-		return movers.ProbeResult{OK: false, Message: err.Error()}, nil
-	}
-	_, err = m.Exec.Exec(ctx, w.Namespace, pod.Name, container, []string{"pg_isready"})
-	if err != nil {
-		return movers.ProbeResult{OK: false, Message: "pg_isready: " + err.Error()}, nil
-	}
-	return movers.ProbeResult{OK: true, Message: "pg_isready"}, nil
+	return m.Kube
 }
 
-// LagSeconds execs ReplicaLagCmd. Missing execer → unknown (not zero).
+func (m Mover) Probe(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) (movers.ProbeResult, error) {
+	dest := m.destKube()
+	if dest == nil {
+		return movers.ProbeResult{OK: false, Message: "postgres-streaming: dest kube required"}, nil
+	}
+	if m.Exec != nil {
+		if pod, container, err := workloads.FirstReadyPod(ctx, dest, w); err == nil {
+			if _, err := m.Exec.Exec(ctx, w.Namespace, pod.Name, container, []string{"pg_isready"}); err == nil {
+				return movers.ProbeResult{OK: true, Message: "pg_isready"}, nil
+			}
+		}
+	}
+	if _, err := dest.CoreV1().ConfigMaps(w.Namespace).Get(ctx, "portage-standby-"+w.Name, metav1.GetOptions{}); err != nil {
+		return movers.ProbeResult{OK: false, Message: "standby config missing"}, nil
+	}
+	job, err := dest.BatchV1().Jobs(w.Namespace).Get(ctx, "portage-basebackup-"+w.Name, metav1.GetOptions{})
+	if err != nil {
+		return movers.ProbeResult{OK: false, Message: "basebackup job missing"}, nil
+	}
+	if job.Status.Succeeded < 1 {
+		return movers.ProbeResult{OK: false, Message: "waiting for pg_basebackup"}, nil
+	}
+	return movers.ProbeResult{OK: true, Message: "basebackup complete; standby configured"}, nil
+}
+
+// LagSeconds execs ReplicaLagCmd on the dest standby. Missing execer → unknown (not zero).
 func (m Mover) LagSeconds(ctx context.Context, w classify.Workload) (int, bool, error) {
-	if m.Exec == nil || m.Kube == nil {
+	kube := m.destKube()
+	if m.Exec == nil || kube == nil {
 		return 0, false, nil
 	}
-	pod, container, err := workloads.FirstReadyPod(ctx, m.Kube, w)
+	pod, container, err := workloads.FirstReadyPod(ctx, kube, w)
 	if err != nil {
 		return 0, false, err
 	}

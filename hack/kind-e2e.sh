@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Two kind clusters: CRDs on both, optional VolSync, postgres inventory on src.
-# WAL replica is exercised same-cluster (two namespaces) so CI does not need
-# cross-kind routing. Set E2E_FULL=1 to also helm-install VolSync.
+# Two kind clusters: CRDs, postgres classified, RPO Backup, dest Sanitize-apply.
+# WAL replica is same-cluster (two namespaces) when E2E_FULL=1 (VolSync).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC=portage-src
 DST=portage-dst
+STORE=/tmp/portage-e2e-store
+LOG=/tmp/portage-controller.log
+CTRL_PID=""
+
+cleanup() {
+  if [[ -n "${CTRL_PID}" ]]; then kill "${CTRL_PID}" 2>/dev/null || true; fi
+  kind delete cluster --name "$SRC" 2>/dev/null || true
+  kind delete cluster --name "$DST" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null || { echo "need $1"; exit 1; }; }
 need kind
@@ -38,6 +47,7 @@ if [[ "${E2E_FULL:-}" == "1" ]] && command -v helm >/dev/null; then
 fi
 
 kubectl --context "$SRC_CTX" create ns pg || true
+kubectl --context "$DST_CTX" create ns pg || true
 cat <<'EOF' | kubectl --context "$SRC_CTX" -n pg apply -f -
 apiVersion: apps/v1
 kind: StatefulSet
@@ -61,10 +71,108 @@ spec:
 EOF
 
 kubectl --context "$SRC_CTX" -n pg rollout status sts/pg --timeout=180s
+kubectl --context "$SRC_CTX" -n pg wait pod/pg-0 --for=condition=Ready --timeout=180s
+# >64KiB so usefulness-gated backup can Succeeded.
+kubectl --context "$SRC_CTX" -n pg exec pg-0 -- \
+  psql -U postgres -c "CREATE TABLE blob AS SELECT repeat('x', 8192) FROM generate_series(1,32);"
+
 go -C "$ROOT" build -o /tmp/portage ./cmd/portage
+go -C "$ROOT" build -o /tmp/portage-controller ./cmd/controller
 /tmp/portage --context "$SRC_CTX" inventory -n pg | tee /tmp/portage-inv.txt
 grep -q SQLLogical /tmp/portage-inv.txt || grep -q postgres /tmp/portage-inv.txt
 
-echo "kind e2e ok: two clusters, CRDs, postgres classified"
-kind delete cluster --name "$SRC"
-kind delete cluster --name "$DST"
+kubectl --context "$SRC_CTX" create ns portage-system || true
+kind get kubeconfig --name "$DST" > /tmp/portage-dst.kubeconfig
+kubectl --context "$SRC_CTX" -n portage-system create secret generic dest-kubeconfig \
+  --from-file=kubeconfig=/tmp/portage-dst.kubeconfig --dry-run=client -o yaml | kubectl --context "$SRC_CTX" apply -f -
+
+cat <<'EOF' | kubectl --context "$SRC_CTX" apply -f -
+apiVersion: portage.io/v1alpha1
+kind: ClusterPair
+metadata:
+  name: kind-pair
+spec:
+  source:
+    name: src
+  destination:
+    name: dst
+    kubeconfigSecret:
+      name: dest-kubeconfig
+      namespace: portage-system
+  transport: ObjectStore
+---
+apiVersion: portage.io/v1alpha1
+kind: Policy
+metadata:
+  name: pg
+  namespace: pg
+spec:
+  clusterPair: kind-pair
+  selector:
+    namespaces: [pg]
+  backup:
+    enabled: true
+    rpo: 1h
+    requireUseful: true
+  renderer:
+    kind: Sanitize
+EOF
+
+mkdir -p "$STORE"
+kind get kubeconfig --name "$SRC" > /tmp/portage-src.kubeconfig
+export KUBECONFIG=/tmp/portage-src.kubeconfig
+PORTAGE_STORE_DIR="$STORE" /tmp/portage-controller \
+  --leader-elect=false \
+  --metrics-bind-address=:18080 \
+  --health-probe-bind-address=:18081 \
+  >"$LOG" 2>&1 &
+CTRL_PID=$!
+
+phase=""
+for _ in $(seq 1 40); do
+  phase=$(kubectl --context "$SRC_CTX" -n pg get actions.portage.io -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+  echo "backup phase=${phase:-none}"
+  if [[ "$phase" == "Succeeded" ]]; then
+    break
+  fi
+  if [[ "$phase" == "Failed" ]]; then
+    kubectl --context "$SRC_CTX" -n pg get actions.portage.io -o yaml || true
+    tail -n 80 "$LOG" || true
+    exit 1
+  fi
+  sleep 3
+done
+if [[ "$phase" != "Succeeded" ]]; then
+  echo "backup did not Succeeded" >&2
+  kubectl --context "$SRC_CTX" -n pg get actions.portage.io -o yaml || true
+  tail -n 80 "$LOG" || true
+  exit 1
+fi
+
+cat <<'EOF' | kubectl --context "$SRC_CTX" apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Action
+metadata:
+  name: restore-pg
+  namespace: pg
+spec:
+  type: Restore
+  policyRef: pg
+EOF
+
+found=0
+for _ in $(seq 1 40); do
+  if kubectl --context "$DST_CTX" -n pg get sts pg >/dev/null 2>&1; then
+    found=1
+    break
+  fi
+  sleep 3
+done
+if [[ "$found" != "1" ]]; then
+  echo "dest cluster missing applied STS" >&2
+  kubectl --context "$SRC_CTX" -n pg get action restore-pg -o yaml || true
+  tail -n 80 "$LOG" || true
+  exit 1
+fi
+
+echo "kind e2e ok: two clusters, CRDs, postgres classified, RPO backup, dest STS applied"

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -275,7 +276,7 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			if err != nil {
 				continue
 			}
-			out, err := (render.Sanitize{Options: opt.Transform}).Render(ctx, render.Request{Policy: pol, Pair: pair, SourceObjects: objs})
+			out, err := render.For(pol, opt.Transform).Render(ctx, render.Request{Policy: pol, Pair: pair, SourceObjects: objs})
 			if err != nil {
 				continue
 			}
@@ -299,23 +300,23 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			facts.Healed[w.Key()] = append(facts.Healed[w.Key()], healed...)
 			if err != nil {
 				if a, ok := artByKey[w.Key()]; ok && a.Useful {
-					if a.ArtifactID != "" {
-						if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
-							rehydrated = false
-							facts.UsefulMessage[w.Key()] = rerr.Error()
-						}
-					}
 					continue
 				}
-				facts.UsefulMessage[w.Key()] = err.Error()
 				rehydrated = false
+				facts.UsefulMessage[w.Key()] = err.Error()
 				continue
 			}
 			if !done {
 				rehydrated = false
 			}
 		}
-		if len(w.PVCNames) == 0 {
+		if a, ok := artByKey[w.Key()]; ok && a.Useful && a.ArtifactID != "" {
+			if ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w); ready {
+				if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
+					facts.UsefulMessage[w.Key()] = rerr.Error()
+				}
+			}
+		} else if len(w.PVCNames) == 0 {
 			if a, ok := artByKey[w.Key()]; ok && a.Useful {
 				rehydrated = true
 			}
@@ -368,18 +369,27 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 		if err := m.Replicate(ctx, w, src, dst); err != nil {
 			failed = err.Error()
 			st.Message = failed
-		} else {
-			st.Ready, st.ProbeOK, st.Message = true, true, "replicate CR applied ("+m.Name()+")"
+			workloadsStatus = append(workloadsStatus, st)
+			continue
+		}
+		pr, _ := m.Probe(ctx, w, dst)
+		st.Probe, st.ProbeOK, st.Message = pr.Message, pr.OK, pr.Message
+		st.Ready = pr.OK
+		if !pr.OK && failed == "" {
+			failed = "waiting for replica sync: " + pr.Message
 		}
 		workloadsStatus = append(workloadsStatus, st)
 	}
 	if act.Spec.DryRun {
 		return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "dry-run replicate", Workloads: workloadsStatus, Terminal: true}, nil
 	}
+	if failed != "" && strings.HasPrefix(failed, "waiting for replica sync") {
+		return restore.Result{Phase: portagev1alpha1.ActionPhaseCatchingUp, Message: failed, Workloads: workloadsStatus, RequeueAfter: 5 * time.Second}, nil
+	}
 	if failed != "" {
 		return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: failed, Workloads: workloadsStatus, Terminal: true}, nil
 	}
-	return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "replication requested", Workloads: workloadsStatus, Terminal: true}, nil
+	return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "replica lag=0; dest probed", Workloads: workloadsStatus, Terminal: true}, nil
 }
 
 func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
@@ -393,7 +403,7 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 	}
 	reg := r.registry(pair, ep)
 	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
-	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
+	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, DestDynamic: ep.Dest.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
 
 	frozen, lagZero, promoted := true, true, true
 	for _, w := range inv.Stateful() {
@@ -401,12 +411,12 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 		case "", portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight, portagev1alpha1.ActionPhaseQuiescing:
 			_ = workloads.Scale(ctx, ep.Source.Kube, w, 0)
 		}
-		if n, ok, err := pg.LagSeconds(ctx, w); err == nil && ok && n > 0 {
+		if n, ok, err := pg.LagSeconds(ctx, w); err == nil && ok {
+			if n > 0 {
+				lagZero = false
+			}
+		} else if ok, err := vs.LagZero(ctx, w); err == nil && !ok {
 			lagZero = false
-		}
-		if ok, err := vs.LagZero(ctx, w); err == nil && ok {
-			// lastSyncTime present counts as caught up for PVC movers
-			_ = ok
 		}
 		if act.Status.Phase == portagev1alpha1.ActionPhasePromoting {
 			override := ""
@@ -527,15 +537,25 @@ func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep cluste
 	if dyn == nil {
 		dyn = r.Dynamic
 	}
-	creds := objectstore.CredsFromEnv()
-	if t == portagev1alpha1.TransportObjectStore {
-		m := rclone.New(dyn, path)
-		m.Kube = ep.Source.Kube
-		m.Creds = creds
-		reg.Register(m)
-	} else {
-		reg.Register(volsync.Mover{Dynamic: dyn, Kube: ep.Source.Kube, Transport: t, DestPath: path, Creds: creds})
+	destDyn := ep.Dest.Dynamic
+	if destDyn == nil {
+		destDyn = dyn
 	}
+	creds := objectstore.CredsFromEnv()
+	m := volsync.Mover{
+		Dynamic: dyn, DestDynamic: destDyn,
+		Kube: ep.Source.Kube, DestKube: ep.Dest.Kube,
+		Transport: t, DestPath: path, Creds: creds,
+	}
+	if t == portagev1alpha1.TransportObjectStore {
+		rc := rclone.New(dyn, path)
+		rc.DestDynamic = destDyn
+		rc.Kube = ep.Source.Kube
+		rc.DestKube = ep.Dest.Kube
+		rc.Creds = creds
+		reg.Register(rc)
+	}
+	reg.Register(m)
 	return reg
 }
 

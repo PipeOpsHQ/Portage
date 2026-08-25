@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
@@ -54,6 +55,67 @@ func TestReplicateObjectStoreUsesRclone(t *testing.T) {
 	sec, _, _ := unstructured.NestedString(obj.Object, "spec", "rclone", "rcloneConfig")
 	if sec != rcloneSecretName {
 		t.Fatalf("rcloneConfig=%q", sec)
+	}
+}
+
+func TestReplicateWritesDestCROnDestClient(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	src := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dst := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	m := Mover{Dynamic: src, DestDynamic: dst, Transport: portagev1alpha1.TransportObjectStore, DestPath: "s3://b/p"}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err != nil {
+		t.Fatalf("source CR: %v", err)
+	}
+	if _, err := src.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err == nil {
+		t.Fatal("destination CR must not live on the source client")
+	}
+	if _, err := dst.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err != nil {
+		t.Fatalf("dest CR: %v", err)
+	}
+}
+
+func TestProbeRequiresLastSyncTimeOnBothSides(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	src := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dst := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	m := Mover{Dynamic: src, DestDynamic: dst}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	pr, _ := m.Probe(context.Background(), w, movers.ClusterHandle{})
+	if pr.OK {
+		t.Fatal("probe must fail before lastSyncTime")
+	}
+	markSync := func(c dynamic.Interface, gvr schema.GroupVersionResource) {
+		obj, err := c.Resource(gvr).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = unstructured.SetNestedField(obj.Object, "2026-08-25T12:00:00Z", "status", "lastSyncTime")
+		if _, err := c.Resource(gvr).Namespace("ns").UpdateStatus(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+			if _, err = c.Resource(gvr).Namespace("ns").Update(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	markSync(src, srcGVR)
+	markSync(dst, dstGVR)
+	pr, _ = m.Probe(context.Background(), w, movers.ClusterHandle{})
+	if !pr.OK {
+		t.Fatalf("probe after sync: %+v", pr)
 	}
 }
 

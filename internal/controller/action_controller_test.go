@@ -126,8 +126,8 @@ func TestReplicateActionAppliesVolSync(t *testing.T) {
 	key := types.NamespacedName{Name: "repl", Namespace: "ns"}
 	drain(t, r, key)
 	got := getAction(t, r, key)
-	if got.Status.Phase != portagev1alpha1.ActionPhaseSucceeded && got.Status.Phase != portagev1alpha1.ActionPhaseFailed {
-		t.Fatalf("phase=%s %s", got.Status.Phase, got.Status.Message)
+	if got.Status.Phase == portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatalf("replicate must not Succeeded before dest lastSyncTime/basebackup: %s", got.Status.Message)
 	}
 }
 

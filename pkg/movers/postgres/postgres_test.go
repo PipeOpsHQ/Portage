@@ -60,6 +60,10 @@ func TestReplicateWritesStandbyConfigOnDest(t *testing.T) {
 	if _, err := dest.BatchV1().Jobs("ns").Get(context.Background(), "portage-basebackup-pg", metav1.GetOptions{}); err != nil {
 		t.Fatalf("basebackup job: %v", err)
 	}
+	pr, _ := m.Probe(context.Background(), w, movers.ClusterHandle{Name: "gcp"})
+	if pr.OK {
+		t.Fatal("probe must wait for pg_basebackup to complete")
+	}
 }
 
 func TestName(t *testing.T) {

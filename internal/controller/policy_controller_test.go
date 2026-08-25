@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,6 +63,39 @@ func TestAutoRestoreCreatesActionWhenPVCMissing(t *testing.T) {
 		t.Fatalf("expected auto restore Action: %v", err)
 	}
 	if act.Spec.Type != portagev1alpha1.ActionRestore {
+		t.Fatalf("type=%s", act.Spec.Type)
+	}
+}
+
+func TestRPOCreatesBackupAction(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec: portagev1alpha1.PolicySpec{
+			Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}},
+			Backup:   portagev1alpha1.BackupSpec{Enabled: true, RPO: "1h"},
+		},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Policy{}, &portagev1alpha1.Action{}).
+		WithObjects(pol).Build()
+	r := &PolicyReconciler{
+		Client:     c,
+		Scheme:     scheme,
+		KubeClient: k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
+		Now:        func() time.Time { return now },
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "p", Namespace: "ns"}}); err != nil {
+		t.Fatal(err)
+	}
+	want := rpoBackupName("p", now, time.Hour)
+	act := &portagev1alpha1.Action{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: want, Namespace: "ns"}, act); err != nil {
+		t.Fatalf("expected RPO Backup Action %s: %v", want, err)
+	}
+	if act.Spec.Type != portagev1alpha1.ActionBackup {
 		t.Fatalf("type=%s", act.Spec.Type)
 	}
 }

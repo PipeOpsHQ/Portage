@@ -32,6 +32,7 @@ import (
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/internal/controller"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
 )
 
@@ -84,10 +85,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	execer := kubeexec.SPDY{Config: mgr.GetConfig(), Client: kubeClient}
+	resolver := clusters.Resolver{
+		Hub:   mgr.GetClient(),
+		Local: clusters.Local("local", kubeClient, dyn, execer, mgr.GetConfig()),
+		HubNS: "portage-system",
+	}
+
 	if err = (&controller.PolicyReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		KubeClient: kubeClient,
+		Resolve:    resolver.Resolve,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Policy")
 		os.Exit(1)
@@ -105,7 +114,8 @@ func main() {
 		Scheme:  mgr.GetScheme(),
 		Kube:    kubeClient,
 		Dynamic: dyn,
-		Exec:    kubeexec.SPDY{Config: mgr.GetConfig(), Client: kubeClient},
+		Exec:    execer,
+		Resolve: resolver.Resolve,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Action")
 		os.Exit(1)

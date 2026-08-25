@@ -149,23 +149,29 @@ database path.
 8. `Policy.spec.restore.auto`
 9. rclone object-store transport as default multi-cloud hop
 
-All nine original waves plus the closing gap are in-tree:
+All nine original waves plus the closing gap are in-tree **and wired**:
 
-- Dual-cluster `Resolve` (source vs dest kubeclients)
+- Dual-cluster `Resolve` is set on Policy and Action reconcilers in `cmd/controller`
 - Object-store dumps (`pg_dumpall` → Store) that survive a cloud boundary
-- Dest Sanitize-apply (PVC/STS typed create)
+- Dest apply uses `Policy.spec.renderer` (`Sanitize` | `Git` | `Webhook`); output is still sanitized
 - Postgres standby ConfigMap on dest; cutover rollback unfreezes source
 - Dual-client test: dest STS exists and dump is in the store
 - Helm chart + manager Deployment + Prometheus metrics
+- `Policy.spec.backup.rpo` creates one Backup Action per window
+- Replicate `Succeeded` only after VolSync `lastSyncTime` on **source and dest**, or postgres `pg_basebackup` complete
+- Dest VolSync `ReplicationDestination` is created with the dest dynamic client
+- CRDs are `apiextensions.k8s.io/v1`
 
 Operational pieces now in-tree:
 
 - SigV4 S3 (`objectstore.NewS3` / AWS_* + PORTAGE_S3_*)
 - VolSync `rclone.conf` + rsyncTLS PSK secrets (not rotated)
 - Postgres `CREATE ROLE replicator`, source Service, dest `pg_basebackup` Job, STS standby mount
-- `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters, classify postgres)
+- `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters: classify, RPO backup, dest STS)
 
 Helm: `volsync.enabled=true` pulls the Backube chart.
+
+Still not a substitute for a production cutover drill: live WAL across two Kind clusters needs dest→source:5432 routing, and VolSync secrets are not rotated.
 
 ## Next
 

@@ -42,12 +42,28 @@ var (
 
 // Mover creates VolSync CRs. Transport ObjectStore uses rclone; Direct uses rsyncTLS.
 type Mover struct {
-	Dynamic   dynamic.Interface
-	Kube      kubernetes.Interface
-	Transport portagev1alpha1.TransportType
-	DestPath  string // rclone dest, e.g. s3://bucket/prefix
-	Schedule  string
-	Creds     objectstore.Creds
+	Dynamic     dynamic.Interface // source cluster
+	DestDynamic dynamic.Interface // dest cluster; nil ⇒ dest is Dynamic (same cluster)
+	Kube        kubernetes.Interface
+	DestKube    kubernetes.Interface
+	Transport   portagev1alpha1.TransportType
+	DestPath    string // rclone dest, e.g. s3://bucket/prefix
+	Schedule    string
+	Creds       objectstore.Creds
+}
+
+func (m Mover) destDyn() dynamic.Interface {
+	if m.DestDynamic != nil {
+		return m.DestDynamic
+	}
+	return m.Dynamic
+}
+
+func (m Mover) destKube() kubernetes.Interface {
+	if m.DestKube != nil {
+		return m.DestKube
+	}
+	return m.Kube
 }
 
 func (m Mover) Name() string { return "volsync" }
@@ -83,7 +99,12 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return nil
 	}
 	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds); err != nil {
-		return fmt.Errorf("volsync secrets: %w", err)
+		return fmt.Errorf("volsync source secrets: %w", err)
+	}
+	if dk := m.destKube(); dk != nil && dk != m.Kube {
+		if err := EnsureSecrets(ctx, dk, w.Namespace, m.Creds); err != nil {
+			return fmt.Errorf("volsync dest secrets: %w", err)
+		}
 	}
 	pvc := w.PVCNames[0]
 	name := "portage-" + w.Name
@@ -92,8 +113,12 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	if err != nil && !errors.IsAlreadyExists(err) && !errors.IsNotFound(err) {
 		return fmt.Errorf("volsync source: %w", err)
 	}
+	dstClient := m.destDyn()
+	if dstClient == nil {
+		return fmt.Errorf("volsync: dest dynamic client required")
+	}
 	dst := m.destination(w, name)
-	_, err = m.Dynamic.Resource(dstGVR).Namespace(w.Namespace).Create(ctx, dst, metav1.CreateOptions{})
+	_, err = dstClient.Resource(dstGVR).Namespace(w.Namespace).Create(ctx, dst, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) && !errors.IsNotFound(err) {
 		return fmt.Errorf("volsync destination: %w", err)
 	}
@@ -107,21 +132,40 @@ func (m Mover) Quiesce(context.Context, classify.Workload) error { return nil }
 func (m Mover) Promote(context.Context, classify.Workload, movers.ClusterHandle) error {
 	return nil
 }
-func (m Mover) Probe(context.Context, classify.Workload, movers.ClusterHandle) (movers.ProbeResult, error) {
-	return movers.ProbeResult{OK: true, Message: "volsync"}, nil
+func (m Mover) Probe(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) (movers.ProbeResult, error) {
+	ok, err := m.LagZero(ctx, w)
+	if err != nil {
+		return movers.ProbeResult{OK: false, Message: err.Error()}, err
+	}
+	if !ok {
+		return movers.ProbeResult{OK: false, Message: "volsync lastSyncTime not set on source and dest"}, nil
+	}
+	return movers.ProbeResult{OK: true, Message: "volsync lastSyncTime set on source and dest"}, nil
 }
 
-// LagZero is true when ReplicationSource last sync succeeded (best-effort).
+// LagZero is true when both ReplicationSource and ReplicationDestination have lastSyncTime.
 func (m Mover) LagZero(ctx context.Context, w classify.Workload) (bool, error) {
-	if m.Dynamic == nil {
-		return false, nil
+	srcOK := synced(ctx, m.Dynamic, srcGVR, w.Namespace, "portage-"+w.Name)
+	dstOK := synced(ctx, m.destDyn(), dstGVR, w.Namespace, "portage-"+w.Name)
+	return srcOK && dstOK, nil
+}
+
+func synced(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string) bool {
+	if dyn == nil {
+		return false
 	}
-	obj, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Get(ctx, "portage-"+w.Name, metav1.GetOptions{})
+	obj, err := dyn.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return false, nil
+		return false
 	}
-	s, found, _ := unstructured.NestedString(obj.Object, "status", "lastSyncTime")
-	return found && s != "", nil
+	if s, found, _ := unstructured.NestedString(obj.Object, "status", "lastSyncTime"); found && s != "" {
+		return true
+	}
+	// ReplicationDestination also reports latestImage once a restore snapshot exists.
+	if _, found, _ := unstructured.NestedFieldNoCopy(obj.Object, "status", "latestImage"); found {
+		return true
+	}
+	return false
 }
 
 func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstructured {

@@ -33,6 +33,7 @@ import (
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/backup"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 )
 
 // PolicyReconciler classifies covered namespaces and writes inventory status.
@@ -41,6 +42,9 @@ type PolicyReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	KubeClient kubernetes.Interface
+	// Resolve returns source and dest cluster clients. Nil ⇒ in-cluster for both.
+	Resolve func(context.Context, *portagev1alpha1.ClusterPair) (clusters.Pair, error)
+	Now     func() time.Time
 }
 
 // +kubebuilder:rbac:groups=portage.io,resources=actions,verbs=get;list;watch;create
@@ -63,8 +67,21 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("kube client is not configured")
 	}
 
+	pair := r.loadPair(ctx, pol)
+	srcKube, dstKube := r.KubeClient, r.KubeClient
+	if r.Resolve != nil {
+		if p, err := r.Resolve(ctx, pair); err == nil {
+			if p.Source.Kube != nil {
+				srcKube = p.Source.Kube
+			}
+			if p.Dest.Kube != nil {
+				dstKube = p.Dest.Kube
+			}
+		}
+	}
+
 	nss := classify.Namespaces(pol.Spec.Selector.Namespaces, pol.Namespace)
-	inv, err := classify.Walk(ctx, r.KubeClient, nss)
+	inv, err := classify.Walk(ctx, srcKube, nss)
 	if err != nil {
 		logger.Error(err, "classify")
 		pol.Status.Phase = portagev1alpha1.PolicyUnhealthy
@@ -125,25 +142,94 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Status().Update(ctx, pol); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.maybeAutoRestore(ctx, pol, inv); err != nil {
+	if err := r.maybeAutoRestore(ctx, pol, inv, dstKube); err != nil {
 		logger.Error(err, "auto-restore")
+	}
+	if err := r.maybeBackup(ctx, pol); err != nil {
+		logger.Error(err, "rpo backup")
 	}
 	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
 }
 
+func (r *PolicyReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func (r *PolicyReconciler) loadPair(ctx context.Context, pol *portagev1alpha1.Policy) *portagev1alpha1.ClusterPair {
+	if pol.Spec.ClusterPair == "" {
+		return nil
+	}
+	pair := &portagev1alpha1.ClusterPair{}
+	if err := r.Get(ctx, types.NamespacedName{Name: pol.Spec.ClusterPair}, pair); err != nil {
+		return nil
+	}
+	return pair
+}
+
+// maybeBackup creates a Backup Action once per RPO window.
+func (r *PolicyReconciler) maybeBackup(ctx context.Context, pol *portagev1alpha1.Policy) error {
+	if !pol.Spec.Backup.Enabled || pol.Spec.Backup.RPO == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(pol.Spec.Backup.RPO)
+	if err != nil || d <= 0 {
+		return nil
+	}
+	name := rpoBackupName(pol.Name, r.now(), d)
+	existing := &portagev1alpha1.Action{}
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: pol.Namespace}, existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	act := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: pol.Namespace,
+			Labels: map[string]string{
+				"portage.io/rpo":    "true",
+				"portage.io/policy": pol.Name,
+			},
+		},
+		Spec: portagev1alpha1.ActionSpec{
+			Type:      portagev1alpha1.ActionBackup,
+			PolicyRef: pol.Name,
+		},
+	}
+	return r.Create(ctx, act)
+}
+
+func rpoBackupName(policy string, now time.Time, d time.Duration) string {
+	slot := now.UTC().Truncate(d).Unix()
+	n := fmt.Sprintf("backup-%s-%d", policy, slot)
+	if len(n) > 63 {
+		n = n[:63]
+	}
+	return n
+}
+
 // maybeAutoRestore creates a Restore Action when Policy.spec.restore.auto is
 // set, backups are useful, and a covered PVC is gone. Never overwrites a Bound PVC.
-func (r *PolicyReconciler) maybeAutoRestore(ctx context.Context, pol *portagev1alpha1.Policy, inv classify.Inventory) error {
+func (r *PolicyReconciler) maybeAutoRestore(ctx context.Context, pol *portagev1alpha1.Policy, inv classify.Inventory, dest kubernetes.Interface) error {
 	if !pol.Spec.Restore.Auto {
 		return nil
 	}
 	if !pol.Status.BackupHealthy {
 		return nil
 	}
+	kube := dest
+	if kube == nil {
+		kube = r.KubeClient
+	}
 	need := false
 	for _, w := range inv.Stateful() {
 		for _, pvcName := range w.PVCNames {
-			_, err := r.KubeClient.CoreV1().PersistentVolumeClaims(w.Namespace).Get(ctx, pvcName, metav1.GetOptions{})
+			_, err := kube.CoreV1().PersistentVolumeClaims(w.Namespace).Get(ctx, pvcName, metav1.GetOptions{})
 			if errors.IsNotFound(err) {
 				need = true
 				break
