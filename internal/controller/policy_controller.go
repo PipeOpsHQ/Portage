@@ -149,7 +149,21 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.maybeBackup(ctx, pol); err != nil {
 		logger.Error(err, "rpo backup")
 	}
-	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+	if err := r.maybeReplicate(ctx, pol); err != nil {
+		logger.Error(err, "live replicate")
+	}
+	if lag := r.replicaLag(ctx, pol); lag != "" && lag != pol.Status.ReplicaLag {
+		latest := &portagev1alpha1.Policy{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
+			latest.Status.ReplicaLag = lag
+			_ = r.Status().Update(ctx, latest)
+		}
+	}
+	requeue := 2 * time.Minute
+	if pol.Spec.Replicate.Enabled {
+		requeue = 30 * time.Second
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 func (r *PolicyReconciler) now() time.Time {
@@ -203,6 +217,68 @@ func (r *PolicyReconciler) maybeBackup(ctx context.Context, pol *portagev1alpha1
 		},
 	}
 	return r.Create(ctx, act)
+}
+
+// maybeReplicate ensures one long-lived Replicate Action while
+// spec.replicate.enabled. The Action stays CatchingUp and live-syncs dest.
+func (r *PolicyReconciler) maybeReplicate(ctx context.Context, pol *portagev1alpha1.Policy) error {
+	if !pol.Spec.Replicate.Enabled {
+		return nil
+	}
+	name := replicateName(pol.Name)
+	existing := &portagev1alpha1.Action{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pol.Namespace}, existing)
+	if err == nil {
+		if existing.Spec.Type != portagev1alpha1.ActionReplicate {
+			return nil
+		}
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		if existing.Labels["portage.io/live-replica"] != "true" {
+			existing.Labels["portage.io/live-replica"] = "true"
+			return r.Update(ctx, existing)
+		}
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	act := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: pol.Namespace,
+			Labels: map[string]string{
+				"portage.io/replicate":    "true",
+				"portage.io/live-replica": "true",
+				"portage.io/policy":       pol.Name,
+			},
+		},
+		Spec: portagev1alpha1.ActionSpec{
+			Type:      portagev1alpha1.ActionReplicate,
+			PolicyRef: pol.Name,
+		},
+	}
+	return r.Create(ctx, act)
+}
+
+func replicateName(policy string) string {
+	n := "replicate-" + policy
+	if len(n) > 63 {
+		n = n[:63]
+	}
+	return n
+}
+
+func (r *PolicyReconciler) replicaLag(ctx context.Context, pol *portagev1alpha1.Policy) string {
+	if !pol.Spec.Replicate.Enabled {
+		return ""
+	}
+	act := &portagev1alpha1.Action{}
+	if err := r.Get(ctx, types.NamespacedName{Name: replicateName(pol.Name), Namespace: pol.Namespace}, act); err != nil {
+		return ""
+	}
+	return act.Status.Message
 }
 
 func rpoBackupName(policy string, now time.Time, d time.Duration) string {

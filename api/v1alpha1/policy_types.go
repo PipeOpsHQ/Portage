@@ -84,12 +84,15 @@ type BackupSpec struct {
 	RequireUseful bool `json:"requireUseful,omitempty"`
 }
 
-// ReplicateSpec is continuous or scheduled volume/app replication to the dest.
+// ReplicateSpec is a live dest replica. While Enabled, Policy keeps one
+// Replicate Action that stays CatchingUp and re-attests dest (Ready + probe
+// + dest Get). It is not a one-shot Succeeded.
 type ReplicateSpec struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// RPO is the target lag, e.g. "15m".
+	// RPO is the target lag, e.g. "15m". Poll stays frequent; this is lag, not
+	// how often the Action is created.
 	// +optional
 	RPO string `json:"rpo,omitempty"`
 }

@@ -313,6 +313,9 @@ spec:
     requireUseful: true
   clusterObjects:
     enabled: true
+  replicate:
+    enabled: true
+    rpo: 15m
   renderer:
     kind: Sanitize
 EOF
@@ -349,24 +352,25 @@ dest_w=$(kd -n apps get widget w1 -o jsonpath='{.spec.k}' 2>/dev/null || true)
 [[ "$dest_w" == "v1" ]] || die "dest Widget spec.k=$dest_w want v1 (CRD+CR must restore)"
 pass "cluster-objects restore dest Get app-config k=v1 and Widget/CRD"
 
+wait_action_in apps replicate-objects CatchingUp 40
 kc -n apps create configmap app-config --from-literal=k=v2 --dry-run=client -o yaml | kc apply -f -
 kc -n apps patch widget w1 --type merge -p '{"spec":{"k":"v2"}}'
-cat <<'EOF' | kc apply -f -
-apiVersion: portage.io/v1alpha1
-kind: Action
-metadata:
-  name: replicate-objects
-  namespace: apps
-spec:
-  type: Replicate
-  policyRef: objects
-EOF
-wait_action_in apps replicate-objects Succeeded 40
-dest_k=$(kd -n apps get configmap app-config -o jsonpath='{.data.k}')
-[[ "$dest_k" == "v2" ]] || die "dest ConfigMap not live-synced k=$dest_k want v2"
-dest_w=$(kd -n apps get widget w1 -o jsonpath='{.spec.k}' 2>/dev/null || true)
-[[ "$dest_w" == "v2" ]] || die "dest Widget not live-synced spec.k=$dest_w want v2"
-pass "cluster-objects replicate live-updated dest ConfigMap+Widget k=v2"
+synced=0
+for _ in $(seq 1 20); do
+  dest_k=$(kd -n apps get configmap app-config -o jsonpath='{.data.k}' 2>/dev/null || true)
+  dest_w=$(kd -n apps get widget w1 -o jsonpath='{.spec.k}' 2>/dev/null || true)
+  echo "  live-sync dest cm=$dest_k widget=$dest_w"
+  if [[ "$dest_k" == "v2" && "$dest_w" == "v2" ]]; then
+    synced=1
+    break
+  fi
+  sleep 3
+done
+[[ "$synced" == "1" ]] || die "dest ConfigMap/Widget not live-synced to v2"
+repl_phase=$(kc -n apps get action replicate-objects -o jsonpath='{.status.phase}')
+[[ "$repl_phase" == "CatchingUp" ]] || die "live replicate must stay CatchingUp, got $repl_phase"
+[[ "$repl_phase" != "Succeeded" ]] || die "live replicate must not Succeeded"
+pass "cluster-objects replicate stays CatchingUp and live-updated dest k=v2"
 
 # --- cutover freeze: source writes paused ---
 apply_action cutover-pg Cutover

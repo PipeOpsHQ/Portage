@@ -16,7 +16,7 @@ E2E_FULL=1 bash hack/kind-e2e.sh   # also helm-install VolSync
 | Usefulness gate | empty-DB `Backup` **Failed** (dump too small — not live PGDATA `du`) |
 | Useful backup | dump ≥ 64 KiB in the object store, `Policy.status.backupHealthy` |
 | Restore | `dest=dst`, dest Ready, `pg_isready`, **seeded rows on dest**, source intact |
-| Cluster objects | dest ConfigMap + CRD/CR exist after Restore; Replicate live-updates dest |
+| Cluster objects | dest ConfigMap + CRD/CR exist after Restore; Replicate stays CatchingUp and live-updates dest |
 | Cutover freeze | source replicas **0**, dest STS still present |
 
 CI: `.github/workflows/e2e.yaml` (25 minute timeout).

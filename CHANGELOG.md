@@ -6,6 +6,8 @@
 
 - `Policy.spec.clusterObjects`: live API-graph backup / replicate / restore
   (dest Get is the probe; not an etcd dump)
+- Live Replicate: Action stays CatchingUp and re-attests dest; Policy
+  `replicate.enabled` keeps one `replicate-<policy>` Action running
 
 ## [0.1.0] - 2026-08-25
 

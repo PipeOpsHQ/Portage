@@ -9,12 +9,17 @@
   ObjectStore → rclone (`portage-rclone` secret). Direct → rsyncTLS
   (`portage-rsync-tls` PSK, never rotated).
 
-Replicate `Succeeded` only after VolSync `lastSyncTime` on **source and dest**,
-or Postgres `pg_basebackup` complete — not when the CR is applied.
+Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
+re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`
+keeps one `replicate-<policy>` Action running.
 
-When `clusterObjects.enabled` is set, Replicate also live-syncs the API graph
-(create-or-update dest). That is active restoration for ConfigMaps, Secrets,
-Services, RBAC, and unknown CRs. Dest Get is the probe; apply-returned is not.
+`Succeeded` is only for dry-run. Dest in sync is `CatchingUp` with
+`replica lag=0; dest probed; live-sync`. Lag or dest miss stays CatchingUp
+until dest attests — it does not freeze as Succeeded and drift.
+
+When `clusterObjects.enabled` is set, each reconcile live-lists source and
+create-or-update dest. That is active restoration for ConfigMaps, Secrets,
+Services, RBAC, CRDs, and unknown CRs.
 
 Install VolSync on both clusters (Helm subchart `volsync.enabled=true` or
 `E2E_FULL=1 bash hack/kind-e2e.sh`).

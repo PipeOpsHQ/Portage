@@ -134,7 +134,12 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	switch act.Status.Phase {
-	case portagev1alpha1.ActionPhaseSucceeded, portagev1alpha1.ActionPhaseFailed, portagev1alpha1.ActionPhaseRolledBack:
+	case portagev1alpha1.ActionPhaseSucceeded:
+		// Replicate is a live loop: dest must keep tracking source.
+		if act.Spec.Type != portagev1alpha1.ActionReplicate || act.Spec.DryRun {
+			return ctrl.Result{}, nil
+		}
+	case portagev1alpha1.ActionPhaseFailed, portagev1alpha1.ActionPhaseRolledBack:
 		return ctrl.Result{}, nil
 	}
 
@@ -474,13 +479,47 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 	if act.Spec.DryRun {
 		return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "dry-run replicate", Workloads: workloadsStatus, Terminal: true}, nil
 	}
-	if failed != "" && strings.HasPrefix(failed, "waiting for replica sync") {
-		return restore.Result{Phase: portagev1alpha1.ActionPhaseCatchingUp, Message: failed, Workloads: workloadsStatus, RequeueAfter: 5 * time.Second}, nil
-	}
+	requeue := replicateRequeue(pol)
 	if failed != "" {
-		return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: failed, Workloads: workloadsStatus, Terminal: true}, nil
+		if failed == "no replicate-capable mover" {
+			return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: failed, Workloads: workloadsStatus, Terminal: true}, nil
+		}
+		msg := failed
+		if !strings.HasPrefix(msg, "waiting for replica sync") {
+			msg = "waiting for replica sync: " + msg
+		}
+		return restore.Result{Phase: portagev1alpha1.ActionPhaseCatchingUp, Message: msg, Workloads: workloadsStatus, RequeueAfter: requeue}, nil
 	}
-	return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "replica lag=0; dest probed", Workloads: workloadsStatus, Terminal: true}, nil
+	return restore.Result{
+		Phase:        portagev1alpha1.ActionPhaseCatchingUp,
+		Message:      "replica lag=0; dest probed; live-sync",
+		Workloads:    workloadsStatus,
+		RequeueAfter: requeue,
+		Attestation: &portagev1alpha1.Attestation{
+			RecordedAt: metav1.NewTime(r.now()),
+			Source:     "controller",
+			Workloads:  workloadsStatus,
+		},
+	}, nil
+}
+
+func replicateRequeue(pol *portagev1alpha1.Policy) time.Duration {
+	const floor = 5 * time.Second
+	if pol == nil || pol.Spec.Replicate.RPO == "" {
+		return floor
+	}
+	d, err := time.ParseDuration(pol.Spec.Replicate.RPO)
+	if err != nil || d <= 0 {
+		return floor
+	}
+	if d < floor {
+		return d
+	}
+	// RPO is target lag, not poll interval. Keep a live loop.
+	if d > 15*time.Second {
+		return 15 * time.Second
+	}
+	return d
 }
 
 func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {

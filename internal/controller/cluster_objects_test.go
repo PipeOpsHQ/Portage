@@ -173,9 +173,13 @@ func TestReplicateClusterObjectsLiveUpdatesDest(t *testing.T) {
 			}, nil
 		},
 	}
-	drain(t, r, types.NamespacedName{Name: "repl", Namespace: "ns"})
-	got := getAction(t, r, types.NamespacedName{Name: "repl", Namespace: "ns"})
-	if got.Status.Phase != portagev1alpha1.ActionPhaseSucceeded {
+	key := types.NamespacedName{Name: "repl", Namespace: "ns"}
+	drain(t, r, key)
+	got := getAction(t, r, key)
+	if got.Status.Phase == portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatal("live replicate must stay CatchingUp, not Succeeded")
+	}
+	if got.Status.Phase != portagev1alpha1.ActionPhaseCatchingUp {
 		t.Fatalf("replicate phase=%s %s", got.Status.Phase, got.Status.Message)
 	}
 
@@ -188,17 +192,12 @@ func TestReplicateClusterObjectsLiveUpdatesDest(t *testing.T) {
 			Dest:   clusters.Endpoints{Name: "gcp", Kube: dstKube, Dynamic: dstDyn},
 		}, nil
 	}
-	act2 := &portagev1alpha1.Action{
-		ObjectMeta: metav1.ObjectMeta{Name: "repl2", Namespace: "ns"},
-		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionReplicate, PolicyRef: "p"},
-	}
-	if err := c.Create(context.Background(), act2); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatal(err)
 	}
-	drain(t, r, types.NamespacedName{Name: "repl2", Namespace: "ns"})
-	got = getAction(t, r, types.NamespacedName{Name: "repl2", Namespace: "ns"})
-	if got.Status.Phase != portagev1alpha1.ActionPhaseSucceeded {
-		t.Fatalf("replicate-2 phase=%s %s", got.Status.Phase, got.Status.Message)
+	got = getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseCatchingUp {
+		t.Fatalf("live replicate after src update phase=%s %s", got.Status.Phase, got.Status.Message)
 	}
 	cm, err := dstDyn.Resource(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}).
 		Namespace("ns").Get(context.Background(), "app", metav1.GetOptions{})

@@ -153,13 +153,16 @@ spec:
                     type: string
                 type: object
               replicate:
-                description: ReplicateSpec is continuous or scheduled volume/app replication
-                  to the dest.
+                description: |-
+                  ReplicateSpec is a live dest replica. While Enabled, Policy keeps one
+                  Replicate Action that stays CatchingUp and re-attests dest (Ready + probe
                 properties:
                   enabled:
                     type: boolean
                   rpo:
-                    description: RPO is the target lag, e.g. "15m".
+                    description: |-
+                      RPO is the target lag, e.g. "15m". Poll stays frequent; this is lag, not
+                      how often the Action is created.
                     type: string
                 type: object
               restore:

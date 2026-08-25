@@ -45,8 +45,9 @@ etcd backup. The Kubernetes API is the data plane:
 1. **Backup** — live list → sanitize → JSON snapshot in the object store.
 2. **Restore** — snapshot → sanitize → dest create-or-update. `Succeeded` only
    after dest Get (CRDs: `Established`).
-3. **Replicate** — same live list on every reconcile, dest update (active
-   restoration). CatchingUp until dest Get.
+3. **Replicate** — live list on every reconcile, dest update (active
+   restoration). The Action **stays CatchingUp** and re-attests dest Get.
+   It does not Succeeded and stop.
 
 **CRDs are always in the graph** when this is enabled — unknown CRs cannot
 restore without them. Other cluster-scoped APIs (Namespaces in the selector,

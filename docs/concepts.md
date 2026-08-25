@@ -48,8 +48,8 @@ Same rules as volumes:
 - unknown CRs stay in the graph
 - dest is sanitized (UID/RV/status/zone pins, SA tokens, `kube-root-ca.crt`)
 - `Succeeded` only after **dest Get** (CRDs must be `Established`)
-- Replicate is live list → create-or-update dest (active restoration), not a
-  one-shot apply
+- Replicate is live list → create-or-update dest (active restoration). The
+  Action stays CatchingUp; it is not a one-shot Succeeded.
 
 Disabled by default so workload e2e is unchanged until you opt in.
 

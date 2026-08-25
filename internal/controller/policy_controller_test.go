@@ -100,6 +100,39 @@ func TestRPOCreatesBackupAction(t *testing.T) {
 	}
 }
 
+func TestReplicateEnabledCreatesLiveAction(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec: portagev1alpha1.PolicySpec{
+			Selector:  portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}},
+			Replicate: portagev1alpha1.ReplicateSpec{Enabled: true, RPO: "15m"},
+		},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Policy{}, &portagev1alpha1.Action{}).
+		WithObjects(pol).Build()
+	r := &PolicyReconciler{
+		Client:     c,
+		Scheme:     scheme,
+		KubeClient: k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "p", Namespace: "ns"}}); err != nil {
+		t.Fatal(err)
+	}
+	act := &portagev1alpha1.Action{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "replicate-p", Namespace: "ns"}, act); err != nil {
+		t.Fatalf("expected live Replicate Action: %v", err)
+	}
+	if act.Spec.Type != portagev1alpha1.ActionReplicate {
+		t.Fatalf("type=%s", act.Spec.Type)
+	}
+	if act.Labels["portage.io/live-replica"] != "true" {
+		t.Fatal("expected live-replica label")
+	}
+}
+
 func TestAutoRestoreSkippedWhenDisabled(t *testing.T) {
 	t.Parallel()
 	scheme := newScheme(t)

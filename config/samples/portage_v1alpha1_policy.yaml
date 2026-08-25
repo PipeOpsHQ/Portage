@@ -23,7 +23,7 @@ spec:
   # replicate + cutover require a ClusterPair
   # clusterPair: cloud-a-to-cloud-b
   # replicate:
-  #   enabled: true
+  #   enabled: true   # live dest replica; Action stays CatchingUp
   #   rpo: 15m
   # cutover:
   #   trafficHook: https://hooks.example.com/portage/switch
