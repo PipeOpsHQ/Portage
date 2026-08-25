@@ -6,6 +6,9 @@ repo_name: PipeOpsHQ/Portage
 edit_uri: edit/main/docs/
 copyright: Copyright 2026 PipeOps and the Portage Authors. Apache-2.0.
 docs_dir: docs
+# Match existing public URLs (/Portage/install.html). Directory URLs
+# (/install/) 404 while GitHub Pages Jekyll /docs is the site source.
+use_directory_urls: false
 strict: true
 
 theme:

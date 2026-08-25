@@ -46,5 +46,7 @@ go get github.com/PipeOpsHQ/portage@v0.1.0
 
 - [Install](install.md)
 - [Concepts](concepts.md)
+- [CRDs](crds.md)
+- [Backup & restore](backup-restore.md)
 - [E2e](e2e.md)
 - [Architecture](architecture.md)

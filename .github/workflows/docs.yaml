@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Canonical site is MkDocs Material via deploy-pages@v4.
+# Repo Settings → Pages must be "GitHub Actions". A branch source of
+# main /docs is Jekyll and overrides this workflow (install.html 200,
+# generator Jekyll v3, no Material theme). configure-pages flips that.
 permissions:
   contents: read
   pages: write
@@ -19,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
