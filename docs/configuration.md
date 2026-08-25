@@ -30,3 +30,8 @@ classify it.
 - `config/samples/portage_v1alpha1_clusterpair.yaml`
 - `config/samples/portage_v1alpha1_policy.yaml`
 - `config/samples/portage_v1alpha1_action.yaml`
+
+## Next
+
+- [CLI](cli.md)
+- [Architecture](architecture.md)

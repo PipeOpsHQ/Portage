@@ -10,3 +10,7 @@ make build
 
 Do not import PipeOps control-plane packages into `pkg/` or `api/`. Adapters
 implement Mover / Renderer / TrafficHook.
+
+## Next
+
+Back to [Install](install.md) or the [home page](index.md).

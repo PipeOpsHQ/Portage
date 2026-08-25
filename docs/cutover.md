@@ -36,3 +36,8 @@ Unfreezes source and POSTs `{ action: rollback }`.
 
 Traffic hook is an HTTP webhook (`Policy.spec.cutover.trafficHook`). PipeOps
 router/DNS is an out-of-tree implementation of `pkg/traffic.Hook`.
+
+## Next
+
+- [Configuration](configuration.md)
+- [CLI](cli.md)

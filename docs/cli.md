@@ -13,3 +13,8 @@ portage --help
 | `portage completion bash\|zsh\|fish\|powershell` | Shell completion |
 
 Global flags: `--kubeconfig`, `--context`, `-n/--namespace`.
+
+## Next
+
+- [Architecture](architecture.md)
+- [Contributing](contributing.md)

@@ -166,3 +166,8 @@ Operational pieces now in-tree:
 - `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters, classify postgres)
 
 Helm: `volsync.enabled=true` pulls the Backube chart.
+
+## Next
+
+- [Contributing](contributing.md)
+- [Install](install.md)

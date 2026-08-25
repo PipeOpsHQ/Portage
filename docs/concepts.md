@@ -39,6 +39,11 @@ Transport:
 its class probe passed (`pg_isready`, `PING`, …). That is the Velero trap
 Portage exists to close.
 
+## Next
+
+- [CRDs](crds.md) — ClusterPair, Policy, Action
+- [Backup & restore](backup-restore.md)
+
 ## Plugins
 
 | Interface | In-tree |

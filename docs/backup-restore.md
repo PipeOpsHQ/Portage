@@ -41,3 +41,8 @@ a covered PVC is gone **and** backups are useful. Bound PVCs are not overwritten
 | redis / valkey / dragonfly | `PING` |
 | mongo | `hello` |
 | GenericPVC | volume-mounted / HTTP |
+
+## Next
+
+- [Replication & cutover](cutover.md)
+- [Configuration](configuration.md)

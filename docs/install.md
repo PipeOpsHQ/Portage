@@ -55,3 +55,12 @@ Controller binary is `/controller` in the image (`cmd/controller`).
 | `AWS_REGION` | Default `us-east-1` |
 
 Without these, the hub uses an in-process memory store (dev only).
+
+## Next
+
+Hub is up. Next is how Portage decides what to copy and when a restore is
+actually done:
+
+- [Concepts](concepts.md) — classify, usefulness, dual cluster, class probes
+- [CRDs](crds.md) — ClusterPair, Policy, Action
+- [Backup & restore](backup-restore.md)
