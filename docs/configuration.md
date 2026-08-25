@@ -17,13 +17,8 @@ See [Install](install.md) for object-store variables.
 
 ## Kind e2e
 
-```bash
-bash hack/kind-e2e.sh
-E2E_FULL=1 bash hack/kind-e2e.sh   # also helm-install VolSync
-```
-
-Two kind clusters, CRDs, a Postgres StatefulSet, `portage inventory` must
-classify it.
+See [E2e](e2e.md). `make e2e` runs the product checks (usefulness, dest probe,
+replayed rows, cutover freeze).
 
 ## Samples
 
@@ -34,4 +29,5 @@ classify it.
 ## Next
 
 - [CLI](cli.md)
+- [E2e](e2e.md)
 - [Architecture](architecture.md)

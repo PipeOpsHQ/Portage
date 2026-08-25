@@ -16,12 +16,14 @@ and call it a Postgres backup.
 
 ## Useful ≠ Completed
 
-A restic/CSI/Velero job that finished is not a backup. Logical engines need a
-dump (or live size) above 64 KiB. CSI `ReadyToUse` alone does **not** pass
-Postgres.
+A restic/CSI/Velero job that finished is not a backup. Logical engines
+(Postgres, MySQL, Redis, …) are judged on the **dump**, not live PGDATA `du`.
+Empty Postgres datadir is tens of MiB and still fails. CSI `ReadyToUse` alone
+does **not** pass Postgres. Generic PVCs may use snapshot size / `ReadyToUse`.
 
 `Policy.status.backupHealthy` is false until every stateful workload has a
-useful artifact. Portable copies live in the object store (`ArtifactID`).
+useful artifact (≥ 64 KiB dump). Portable copies live in the object store
+(`ArtifactID`).
 
 ## Dual cluster
 
@@ -49,6 +51,6 @@ Portage exists to close.
 | Interface | In-tree |
 |---|---|
 | `pkg/movers.Mover` | VolSync, rclone transport, postgres-streaming |
-| `pkg/render.Renderer` | Sanitize |
+| `pkg/render.Renderer` | Sanitize, Git, HTTP Webhook (output still sanitized) |
 | `pkg/traffic.Hook` | Noop, HTTP webhook |
 | `pkg/objectstore.Store` | Memory, Dir, SigV4 S3 |

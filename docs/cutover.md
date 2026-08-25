@@ -9,6 +9,9 @@
   ObjectStore → rclone (`portage-rclone` secret). Direct → rsyncTLS
   (`portage-rsync-tls` PSK, never rotated).
 
+Replicate `Succeeded` only after VolSync `lastSyncTime` on **source and dest**,
+or Postgres `pg_basebackup` complete — not when the CR is applied.
+
 Install VolSync on both clusters (Helm subchart `volsync.enabled=true` or
 `E2E_FULL=1 bash hack/kind-e2e.sh`).
 

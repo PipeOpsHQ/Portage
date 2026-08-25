@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install MkDocs
-        run: pip install mkdocs-material
+        run: pip install -r requirements-docs.txt
       - name: Build
         run: mkdocs build --strict
       - uses: actions/upload-pages-artifact@v3

@@ -49,9 +49,10 @@ Image: `ghcr.io/pipeopshq/portage:v0.1.0`
 
 ## Status
 
-v0.1.0 — operator, CLI, dual-cluster clients, object-store dumps, dest apply,
-VolSync secrets, Postgres standby Job, kind e2e. See
-[docs](https://pipeopshq.github.io/Portage/).
+v0.1.0 — operator, CLI, dual-cluster `Resolve`, `pg_dump` object-store dumps,
+dest Sanitize/Git/Webhook apply, VolSync dest CRs, Postgres standby Job,
+usefulness-gated backup, kind product e2e. Canonical docs:
+[pipeopshq.github.io/Portage](https://pipeopshq.github.io/Portage/).
 
 ## CRDs
 
@@ -81,8 +82,9 @@ The controller writes `Policy.status.inventory` with a class per workload.
 ## Backup and restore (this slice)
 
 A backup is **not** healthy because a Job completed. `Policy.status.backupHealthy`
-is true only when every stateful workload has a **useful** artifact (size floor
-and dump shape — a 12 KiB certs-only Postgres snapshot is a failure).
+is true only when every stateful workload has a **useful** dump (logical engines
+are not judged on live PGDATA `du` — empty Postgres is tens of MiB and still
+fails). A 12 KiB certs-only snapshot is a failure.
 
 A Restore `Action` is **not** `Succeeded` because a mover finished. The
 controller execs the class probe (`pg_isready`, `PING`, …) and will sit in
@@ -110,8 +112,8 @@ PipeOps, and they are how PipeOps itself integrates.
 
 | Interface | Package | In-tree |
 |---|---|---|
-| Data path | `pkg/movers.Mover` | (VolSync, CSI snapshot, engine dumps — coming) |
-| Dest manifests | `pkg/render.Renderer` | `Sanitize` |
+| Data path | `pkg/movers.Mover` | VolSync (rclone / rsyncTLS), CSI snapshots, `pg_dump` / engine dumps, postgres-streaming |
+| Dest manifests | `pkg/render.Renderer` | `Sanitize`, `Git`, HTTP `Webhook` |
 | Traffic switch | `pkg/traffic.Hook` | `Noop`, HTTP `Webhook` |
 
 PipeOps (and any other control plane that already knows desired state)

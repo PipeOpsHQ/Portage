@@ -33,4 +33,4 @@ git commit -s -m "pkg/classify: detect orphan PVCs as UnknownStateful"
 
 ## First useful PRs
 
-See `docs/architecture.md` — classifier, usefulness-gated backup, Restore Action that waits on probes, then VolSync, then cutover.
+See [docs](https://pipeopshq.github.io/Portage/) (`docs/` in this repo). Classifier, usefulness-gated backup, Restore that waits on probes, VolSync, cutover. `make docs` serves MkDocs locally.

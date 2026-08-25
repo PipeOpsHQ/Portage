@@ -151,8 +151,9 @@ database path.
 
 All nine original waves plus the closing gap are in-tree **and wired**:
 
-- Dual-cluster `Resolve` is set on Policy and Action reconcilers in `cmd/controller`
-- Object-store dumps (`pg_dumpall` → Store) that survive a cloud boundary
+- Dual-cluster `Resolve` is set on Policy and Action reconcilers; dest kubeconfigs
+  are read via client-go (the manager cache does not watch Secrets)
+- Object-store dumps (`pg_dump` of the engine DB → Store) that survive a cloud boundary
 - Dest apply uses `Policy.spec.renderer` (`Sanitize` | `Git` | `Webhook`); output is still sanitized
 - Postgres standby ConfigMap on dest; cutover rollback unfreezes source
 - Dual-client test: dest STS exists and dump is in the store

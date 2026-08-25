@@ -5,6 +5,8 @@ repo_url: https://github.com/PipeOpsHQ/Portage
 repo_name: PipeOpsHQ/Portage
 edit_uri: edit/main/docs/
 copyright: Copyright 2026 PipeOps and the Portage Authors. Apache-2.0.
+docs_dir: docs
+strict: true
 
 theme:
   name: material
@@ -28,8 +30,17 @@ theme:
     - navigation.top
     - navigation.footer
     - search.suggest
+    - search.highlight
     - content.code.copy
     - content.action.edit
+    - content.tabs.link
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/PipeOpsHQ/Portage
+    - icon: fontawesome/brands/golang
+      link: https://pkg.go.dev/github.com/PipeOpsHQ/portage
 
 markdown_extensions:
   - admonition
@@ -37,6 +48,8 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
   - tables
   - toc:
       permalink: true
@@ -50,5 +63,6 @@ nav:
   - Replication & cutover: cutover.md
   - Configuration: configuration.md
   - CLI: cli.md
+  - E2e: e2e.md
   - Architecture: architecture.md
   - Contributing: contributing.md

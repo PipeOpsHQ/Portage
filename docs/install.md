@@ -30,9 +30,11 @@ helm upgrade --install portage charts/portage \
 
 ```bash
 go install github.com/PipeOpsHQ/portage/cmd/portage@v0.1.0
-# or download from GitHub Releases
+# or download portage_* / controller_* from GitHub Releases
 portage inventory -n my-tenant
 ```
+
+Docs: [pipeopshq.github.io/Portage](https://pipeopshq.github.io/Portage/).
 
 ## Images
 

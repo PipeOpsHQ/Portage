@@ -52,7 +52,7 @@ spec:
     auto: false
     neverOverwriteNewer: true
   renderer:
-    kind: Sanitize
+    kind: Sanitize   # Sanitize | Git | Webhook
   cutover:
     trafficHook: https://hooks.example.com/portage/switch
     holdSource: 24h

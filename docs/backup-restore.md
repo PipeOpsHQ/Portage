@@ -3,7 +3,8 @@
 ## Backup
 
 1. Classify source workloads.
-2. Exec logical dump (`pg_dumpall`, `mysqldump`, …) when the engine supports it.
+2. Exec logical dump (`pg_dump` of the engine database, `mysqldump`, …). Postgres
+   is **not** judged on live PGDATA size.
 3. Put the dump in the object store (SigV4 S3, `PORTAGE_STORE_DIR`, or memory).
 4. Optionally create CSI VolumeSnapshots (same-cloud safety net).
 5. Evaluate **usefulness**. Certs-only ~12 KiB Postgres **fails** the Action.
@@ -23,11 +24,15 @@ kubectl -n tenant-a get action backup-1 -w
 ## Restore
 
 1. Preflight: refuse if any stateful artifact is not useful.
-2. Export source objects, **Sanitize** (drop zone pins, remap StorageClass).
-3. Apply to **dest** (PVC first, then STS/Deploy).
-4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql` stdin.
+2. Export source objects, render dest (`Sanitize`, `Git`, or `Webhook`; always
+   sanitized after).
+3. Apply to **dest** (PVC first, then STS/Deploy) using the ClusterPair dest
+   kubeconfig — not the hub cache.
+4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql`
+   stdin. Dump apply runs **once** (re-psql every reconcile hangs exec).
 5. Heal Pending topology/SC.
-6. Wait Ready + `pg_isready` (or class probe). **Never Succeeded without that.**
+6. Wait Ready + `pg_isready` (or class probe). Empty dest Postgres that is Ready
+   is **not** a restore until the dump lands. **Never Succeeded without that.**
 
 `Policy.spec.restore.auto: true` creates one `restore-auto-<policy>` Action when
 a covered PVC is gone **and** backups are useful. Bound PVCs are not overwritten.

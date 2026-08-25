@@ -16,5 +16,6 @@ Global flags: `--kubeconfig`, `--context`, `-n/--namespace`.
 
 ## Next
 
+- [E2e](e2e.md)
 - [Architecture](architecture.md)
 - [Contributing](contributing.md)
