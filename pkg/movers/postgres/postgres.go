@@ -21,6 +21,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
@@ -71,9 +72,10 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, src, dst move
 	if dest == nil {
 		return fmt.Errorf("postgres-streaming: dest kube required")
 	}
-	host := src.Name
+	host, port := splitHostPort(src.Address)
 	if host == "" {
-		host = w.Name
+		host = svcName + "." + w.Namespace + ".svc"
+		port = "5432"
 	}
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -82,7 +84,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, src, dst move
 			Labels:    map[string]string{"portage.io/name": w.Name, "portage.io/role": "standby"},
 		},
 		Data: map[string]string{
-			"primary_conninfo": fmt.Sprintf("host=%s user=postgres application_name=portage", host),
+			"primary_conninfo": fmt.Sprintf("host=%s port=%s user=replicator application_name=portage", host, port),
 			"primary_cluster":  dst.Name,
 			"hot_standby":      "on",
 		},
@@ -94,15 +96,11 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, src, dst move
 	if err != nil {
 		return err
 	}
-	if err := m.ensurePrimaryService(ctx, w); err != nil {
+	if err := m.ensurePrimaryService(ctx, w, src.Address); err != nil {
 		return err
 	}
 	_ = m.ensureReplicatorRole(ctx, w)
-	primary := svcName + "." + w.Namespace + ".svc"
-	if src.Name != "" && src.Name != "local" && src.Name != "source" {
-		primary = src.Name
-	}
-	if err := m.ensureBasebackupJob(ctx, w, primary); err != nil {
+	if err := m.ensureBasebackupJob(ctx, w, host, port); err != nil {
 		return err
 	}
 	return m.patchDestStandby(ctx, w)
@@ -133,6 +131,22 @@ func (m Mover) Promote(ctx context.Context, w classify.Workload, _ movers.Cluste
 	}
 	_, err = m.Exec.Exec(ctx, w.Namespace, pod.Name, container, PromoteCmd)
 	return err
+}
+
+func splitHostPort(addr string) (host, port string) {
+	port = "5432"
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", port
+	}
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, port
+	}
+	if p != "" {
+		port = p
+	}
+	return h, port
 }
 
 func (m Mover) destKube() kubernetes.Interface {

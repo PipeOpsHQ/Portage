@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -420,7 +421,8 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 	reg := r.registry(pair, ep)
 	src, dst := movers.ClusterHandle{Name: "source"}, movers.ClusterHandle{Name: "dest"}
 	if pair != nil {
-		src.Name, dst.Name = pair.Spec.Source.Name, pair.Spec.Destination.Name
+		src.Name, src.Address = pair.Spec.Source.Name, pair.Spec.Source.Address
+		dst.Name, dst.Address = pair.Spec.Destination.Name, pair.Spec.Destination.Address
 	}
 	var failed string
 	workloadsStatus := []portagev1alpha1.WorkloadActionStatus{}
@@ -689,10 +691,12 @@ func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep cluste
 		destDyn = dyn
 	}
 	creds := objectstore.CredsFromEnv()
+	snapClass := snapshotClassOf(pair)
 	m := volsync.Mover{
 		Dynamic: dyn, DestDynamic: destDyn,
 		Kube: ep.Source.Kube, DestKube: ep.Dest.Kube,
 		Transport: t, DestPath: path, Creds: creds,
+		Schedule: os.Getenv("PORTAGE_VOLSYNC_SCHEDULE"), SnapshotClass: snapClass,
 	}
 	if t == portagev1alpha1.TransportObjectStore {
 		rc := rclone.New(dyn, path)
@@ -711,6 +715,18 @@ func transportOf(pair *portagev1alpha1.ClusterPair) portagev1alpha1.TransportTyp
 		return portagev1alpha1.TransportObjectStore
 	}
 	return pair.Spec.Transport
+}
+
+func snapshotClassOf(pair *portagev1alpha1.ClusterPair) string {
+	if pair == nil {
+		return ""
+	}
+	for _, v := range pair.Spec.SnapshotClassMap {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func destPath(pair *portagev1alpha1.ClusterPair) string {

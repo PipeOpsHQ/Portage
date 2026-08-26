@@ -28,7 +28,7 @@ func TestNewPinsObjectStore(t *testing.T) {
 	if m.Transport != portagev1alpha1.TransportObjectStore || m.DestPath != "s3://bucket/p" {
 		t.Fatalf("%+v", m)
 	}
-	if m.Name() != "volsync" {
-		t.Fatal("rclone is a volsync transport, not a new data plane")
+	if m.ObjectMover != "rclone" || m.Name() != "rclone" {
+		t.Fatal("rclone override must keep ObjectMover=rclone")
 	}
 }

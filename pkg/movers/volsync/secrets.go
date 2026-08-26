@@ -33,10 +33,14 @@ import (
 const (
 	rcloneSecretName = "portage-rclone"
 	tlsSecretName    = "portage-rsync-tls"
+	resticSecretName = "portage-restic"
 )
 
 // SecretNames used in ReplicationSource/Destination specs.
 func SecretNames() (rclone, tls string) { return rcloneSecretName, tlsSecretName }
+
+// ResticSecretName is the VolSync restic repository secret.
+func ResticSecretName() string { return resticSecretName }
 
 // RcloneINI is the VolSync rclone.conf section (must match rcloneConfigSection).
 func RcloneINI(c objectstore.Creds) string {
@@ -63,8 +67,8 @@ func orRegion(r string) string {
 	return r
 }
 
-// EnsureSecrets writes rclone.conf and rsyncTLS PSK secrets if they do not exist.
-func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds) error {
+// EnsureSecrets writes rclone.conf, restic repo, and rsyncTLS PSK secrets if they do not exist.
+func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath string) error {
 	if kube == nil || namespace == "" {
 		return nil
 	}
@@ -75,6 +79,9 @@ func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace str
 			Data:       map[string][]byte{"rclone.conf": []byte(RcloneINI(c))},
 		}
 		if err := upsertSecret(ctx, kube, sec); err != nil {
+			return err
+		}
+		if err := ensureResticSecret(ctx, kube, namespace, c, destPath); err != nil {
 			return err
 		}
 	}
@@ -101,6 +108,40 @@ func upsertSecret(ctx context.Context, kube kubernetes.Interface, sec *corev1.Se
 		_, err = kube.CoreV1().Secrets(sec.Namespace).Update(ctx, sec, metav1.UpdateOptions{})
 	}
 	return err
+}
+
+func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath string) error {
+	pw := make([]byte, 16)
+	if _, err := rand.Read(pw); err != nil {
+		return err
+	}
+	data := map[string][]byte{
+		"RESTIC_REPOSITORY":     []byte(c.ResticRepository(destPath)),
+		"RESTIC_PASSWORD":       []byte(hex.EncodeToString(pw)),
+		"AWS_ACCESS_KEY_ID":     []byte(c.AccessKey),
+		"AWS_SECRET_ACCESS_KEY": []byte(c.SecretKey),
+		"AWS_DEFAULT_REGION":    []byte(orRegion(c.Region)),
+	}
+	cur, err := kube.CoreV1().Secrets(namespace).Get(ctx, resticSecretName, metav1.GetOptions{})
+	if err == nil {
+		// Keep RESTIC_PASSWORD stable so incremental repos stay readable.
+		if old := cur.Data["RESTIC_PASSWORD"]; len(old) > 0 {
+			data["RESTIC_PASSWORD"] = old
+		}
+		cur.Data = data
+		_, err = kube.CoreV1().Secrets(namespace).Update(ctx, cur, metav1.UpdateOptions{})
+		return err
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: resticSecretName, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       data,
+	}
+	_, err = kube.CoreV1().Secrets(namespace).Create(ctx, sec, metav1.CreateOptions{})
+	return ignoreExists(err)
 }
 
 func ignoreExists(err error) error {

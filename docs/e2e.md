@@ -6,24 +6,20 @@ kubeconfig Secret. This is the product check, not “STS exists.”
 ```bash
 make e2e
 # or: bash hack/kind-e2e.sh
-E2E_FULL=1 bash hack/kind-e2e.sh   # also helm-install VolSync
 ```
 
 | Check | Pass means |
 |---|---|
 | Classify | `portage inventory` reports `SQLLogical` postgres |
-| ClusterPair | dest API reachable |
+| ClusterPair | dest API reachable; `source.address` is dest→source WAL/NodePort |
 | Usefulness gate | empty-DB `Backup` **Failed** (dump too small — not live PGDATA `du`) |
 | Useful backup | dump ≥ 64 KiB in the object store, `Policy.status.backupHealthy` |
 | Restore | `dest=dst`, dest Ready, `pg_isready`, **seeded rows on dest**, source intact |
 | Cluster objects | dest ConfigMap + CRD/CR exist after Restore; Replicate stays CatchingUp and live-updates dest |
+| PVC bytes | VolSync restic `lastSyncTime` **and** dest PVC marker file; second write lands (incremental) |
 | Cutover freeze | source replicas **0**, dest STS still present |
 
-CI: `.github/workflows/e2e.yaml` (25 minute timeout).
-
-!!! note
-    Live WAL across two Kind clusters needs dest→source:5432 routing. Default
-    CI does not assert VolSync byte sync (`E2E_FULL=1` only installs the chart).
+CI: `.github/workflows/e2e.yaml` (40 minute timeout). Helm + MinIO on the kind network. `ClusterPair.spec.source.address` is the host gateway NodePort for Postgres WAL.
 
 ## Next
 

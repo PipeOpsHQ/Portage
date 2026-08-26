@@ -6,8 +6,11 @@
   dest ConfigMap `portage-standby-<name>`, `pg_basebackup -R` Job, STS mount at
   `/etc/portage-standby`. Dest must reach source:5432.
 - **Generic PVC:** VolSync `ReplicationSource` / `ReplicationDestination`.
-  ObjectStore → rclone (`portage-rclone` secret). Direct → rsyncTLS
-  (`portage-rsync-tls` PSK, never rotated).
+  ObjectStore → **restic** (chunked incremental; `portage-restic` secret).
+  Dest **schedule-pulls** (a one-shot manual trigger was the live-sync hole).
+  `copyMethod: Direct` unless `ClusterPair.spec.snapshotClassMap` is set
+  (CSI Snapshot). Override `Policy.spec.moverOverrides.GenericPVC: rclone`
+  for the old rclone hop. Direct transport → rsyncTLS (`portage-rsync-tls` PSK).
 
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`

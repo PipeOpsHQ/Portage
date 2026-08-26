@@ -192,3 +192,26 @@ func CredsFromEnv() Creds {
 		Prefix:    pfx,
 	}
 }
+
+// ResticRepository is the VolSync/restic s3: URL for incremental PVC sync.
+func (c Creds) ResticRepository(destPath string) string {
+	ep, bucket, prefix := ParseURL(destPath)
+	if c.Endpoint != "" {
+		ep = c.Endpoint
+	}
+	if bucket == "" {
+		bucket = c.Bucket
+	}
+	if prefix == "" {
+		prefix = c.Prefix
+	}
+	if destPath != "" && bucket == "" {
+		_, bucket, prefix = ParseURL(destPath)
+	}
+	ep = strings.TrimRight(ep, "/")
+	path := strings.Trim(bucket+"/"+prefix, "/")
+	if ep == "" {
+		return "s3:s3.amazonaws.com/" + path
+	}
+	return "s3:" + ep + "/" + path
+}

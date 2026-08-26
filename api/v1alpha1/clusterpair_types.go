@@ -37,6 +37,11 @@ type ClusterRef struct {
 	// Name is a stable identifier used in logs and status (not a K8s name).
 	Name string `json:"name"`
 
+	// Address is how dest movers reach this cluster, e.g. "192.0.2.10:30432"
+	// for Postgres WAL. Empty means in-cluster DNS (same cluster only).
+	// +optional
+	Address string `json:"address,omitempty"`
+
 	// KubeconfigSecret is a Secret containing a kubeconfig used to
 	// reach this cluster. Empty means "the cluster this controller runs on".
 	// +optional

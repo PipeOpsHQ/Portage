@@ -54,6 +54,9 @@ type ProbeResult struct {
 // ClusterHandle is an opaque identifier for a cluster (source or dest).
 type ClusterHandle struct {
 	Name string
+	// Address is host:port dest movers use to reach this cluster (WAL, rsync).
+	// Empty means in-cluster DNS.
+	Address string
 }
 
 // Mover is one data-path plugin. Implementations must be idempotent.

@@ -37,3 +37,12 @@ func TestCredsFromEnv(t *testing.T) {
 		t.Fatalf("prefix key=%s", s.key("a.sql"))
 	}
 }
+
+func TestResticRepository(t *testing.T) {
+	t.Parallel()
+	c := Creds{Endpoint: "http://minio:9000", Bucket: "portage"}
+	got := c.ResticRepository("s3://portage/files/app")
+	if got != "s3:http://minio:9000/portage/files/app" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -40,16 +40,21 @@ var (
 	dstGVR = schema.GroupVersionResource{Group: "volsync.backube", Version: "v1alpha1", Resource: "replicationdestinations"}
 )
 
-// Mover creates VolSync CRs. Transport ObjectStore uses rclone; Direct uses rsyncTLS.
+// Mover creates VolSync CRs. ObjectStore uses restic (incremental) unless
+// ObjectMover=rclone. Direct uses rsyncTLS.
 type Mover struct {
-	Dynamic     dynamic.Interface // source cluster
-	DestDynamic dynamic.Interface // dest cluster; nil ⇒ dest is Dynamic (same cluster)
-	Kube        kubernetes.Interface
-	DestKube    kubernetes.Interface
-	Transport   portagev1alpha1.TransportType
-	DestPath    string // rclone dest, e.g. s3://bucket/prefix
-	Schedule    string
-	Creds       objectstore.Creds
+	Dynamic       dynamic.Interface // source cluster
+	DestDynamic   dynamic.Interface // dest cluster; nil ⇒ dest is Dynamic (same cluster)
+	Kube          kubernetes.Interface
+	DestKube      kubernetes.Interface
+	Transport     portagev1alpha1.TransportType
+	DestPath      string // s3://bucket/prefix
+	Schedule      string
+	Creds         objectstore.Creds
+	CopyMethod    string // Direct (kind) or Snapshot (CSI)
+	SnapshotClass string
+	// ObjectMover is "restic" (default ObjectStore, incremental) or "rclone".
+	ObjectMover string
 }
 
 func (m Mover) destDyn() dynamic.Interface {
@@ -66,7 +71,12 @@ func (m Mover) destKube() kubernetes.Interface {
 	return m.Kube
 }
 
-func (m Mover) Name() string { return "volsync" }
+func (m Mover) Name() string {
+	if m.ObjectMover == "rclone" {
+		return "rclone"
+	}
+	return "volsync"
+}
 
 func (m Mover) Classes() []portagev1alpha1.WorkloadClass {
 	return []portagev1alpha1.WorkloadClass{
@@ -98,11 +108,12 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	if len(w.PVCNames) == 0 {
 		return nil
 	}
-	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds); err != nil {
+	path := m.objectPath(w)
+	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, path); err != nil {
 		return fmt.Errorf("volsync source secrets: %w", err)
 	}
 	if dk := m.destKube(); dk != nil && dk != m.Kube {
-		if err := EnsureSecrets(ctx, dk, w.Namespace, m.Creds); err != nil {
+		if err := EnsureSecrets(ctx, dk, w.Namespace, m.Creds, path); err != nil {
 			return fmt.Errorf("volsync dest secrets: %w", err)
 		}
 	}
@@ -174,19 +185,14 @@ func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstr
 		"trigger":   map[string]any{"schedule": m.schedule()},
 	}
 	if m.Transport == portagev1alpha1.TransportObjectStore {
-		path := m.DestPath
-		if path == "" {
-			path = "s3://portage/" + w.Namespace + "/" + w.Name
-		}
-		spec["rclone"] = map[string]any{
-			"rcloneConfigSection": "rclone",
-			"rcloneConfig":        rcloneSecretName,
-			"rcloneDestPath":      path,
-			"copyMethod":          "Snapshot",
+		if m.ObjectMover == "rclone" {
+			spec["rclone"] = m.rcloneSpec(w)
+		} else {
+			spec["restic"] = m.resticSpec()
 		}
 	} else {
 		spec["rsyncTLS"] = map[string]any{
-			"copyMethod": "Snapshot",
+			"copyMethod": m.copyMethod(),
 			"keySecret":  tlsSecretName,
 		}
 	}
@@ -203,17 +209,21 @@ func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstr
 }
 
 func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstructured {
-	spec := map[string]any{"trigger": map[string]any{"manual": "portage"}}
+	spec := map[string]any{}
 	if m.Transport == portagev1alpha1.TransportObjectStore {
-		path := m.DestPath
-		if path == "" {
-			path = "s3://portage/" + w.Namespace + "/" + w.Name
-		}
-		spec["rclone"] = map[string]any{
-			"rcloneConfigSection": "rclone",
-			"rcloneConfig":        rcloneSecretName,
-			"rcloneDestPath":      path,
-			"copyMethod":          "Snapshot",
+		// Dest must pull on a schedule. A one-shot manual trigger is the
+		// live-sync hole: source keeps snapshotting, dest never applies.
+		spec["trigger"] = map[string]any{"schedule": m.schedule()}
+		if m.ObjectMover == "rclone" {
+			spec["rclone"] = m.rcloneSpec(w)
+		} else {
+			rs := m.resticSpec()
+			if len(w.PVCNames) > 0 {
+				rs["destinationPVC"] = w.PVCNames[0]
+			}
+			rs["accessModes"] = []any{"ReadWriteOnce"}
+			rs["capacity"] = "1Gi"
+			spec["restic"] = rs
 		}
 	} else {
 		spec["rsyncTLS"] = map[string]any{
@@ -233,9 +243,51 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 	}}
 }
 
+func (m Mover) resticSpec() map[string]any {
+	spec := map[string]any{
+		"repository":        resticSecretName,
+		"copyMethod":        m.copyMethod(),
+		"cacheCapacity":     "1Gi",
+		"pruneIntervalDays": int64(7),
+		"retain":            map[string]any{"hourly": int64(3), "daily": int64(1)},
+	}
+	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
+		spec["volumeSnapshotClassName"] = m.SnapshotClass
+	}
+	return spec
+}
+
+func (m Mover) rcloneSpec(w classify.Workload) map[string]any {
+	return map[string]any{
+		"rcloneConfigSection": "rclone",
+		"rcloneConfig":        rcloneSecretName,
+		"rcloneDestPath":      m.objectPath(w),
+		"copyMethod":          m.copyMethod(),
+	}
+}
+
+func (m Mover) objectPath(w classify.Workload) string {
+	if m.DestPath != "" {
+		return m.DestPath
+	}
+	return "s3://portage/" + w.Namespace + "/" + w.Name
+}
+
+func (m Mover) copyMethod() string {
+	if m.CopyMethod != "" {
+		return m.CopyMethod
+	}
+	if m.SnapshotClass != "" {
+		return "Snapshot"
+	}
+	// Direct works on kind local-path (no CSI snapshots). Snapshot when a
+	// VolumeSnapshotClass is mapped on the ClusterPair.
+	return "Direct"
+}
+
 func (m Mover) schedule() string {
 	if m.Schedule != "" {
 		return m.Schedule
 	}
-	return "*/15 * * * *"
+	return "*/5 * * * *"
 }

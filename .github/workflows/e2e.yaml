@@ -9,16 +9,17 @@ on:
 jobs:
   kind:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
       - uses: helm/kind-action@v1
         with:
           install_only: true
       - name: Two-cluster kind e2e
         run: bash hack/kind-e2e.sh
-        env:
-          E2E_FULL: "0"

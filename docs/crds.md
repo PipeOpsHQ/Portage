@@ -15,6 +15,7 @@ metadata:
 spec:
   source:
     name: aws
+    address: 192.0.2.10:30432   # dest WAL / NodePort; empty = in-cluster DNS
   destination:
     name: gcp
     kubeconfigSecret:

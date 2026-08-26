@@ -8,6 +8,8 @@
   (dest Get is the probe; not an etcd dump)
 - Live Replicate: Action stays CatchingUp and re-attests dest; Policy
   `replicate.enabled` keeps one `replicate-<policy>` Action running
+- VolSync ObjectStore uses restic (incremental) and dest schedule-pull;
+  `ClusterRef.address` for dest→source Postgres WAL; e2e asserts dest PVC bytes
 
 ## [0.1.0] - 2026-08-25
 

@@ -32,7 +32,7 @@ import (
 	"github.com/PipeOpsHQ/portage/pkg/movers"
 )
 
-func TestReplicateObjectStoreUsesRclone(t *testing.T) {
+func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
@@ -44,6 +44,39 @@ func TestReplicateObjectStoreUsesRclone(t *testing.T) {
 	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
 		t.Fatal(err)
 	}
+	src, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, _, _ := unstructured.NestedString(src.Object, "spec", "restic", "repository")
+	if repo != resticSecretName {
+		t.Fatalf("restic repository=%q", repo)
+	}
+	cm, _, _ := unstructured.NestedString(src.Object, "spec", "restic", "copyMethod")
+	if cm != "Direct" {
+		t.Fatalf("copyMethod=%q want Direct (kind-safe)", cm)
+	}
+	dst, err := dyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched, _, _ := unstructured.NestedString(dst.Object, "spec", "trigger", "schedule")
+	if sched == "" {
+		t.Fatal("dest must schedule-pull; manual trigger is the live-sync hole")
+	}
+}
+
+func TestReplicateObjectStoreRcloneOverride(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore, DestPath: "s3://bucket/ns/pg", ObjectMover: "rclone"}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
 	obj, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -51,10 +84,6 @@ func TestReplicateObjectStoreUsesRclone(t *testing.T) {
 	path, _, _ := unstructured.NestedString(obj.Object, "spec", "rclone", "rcloneDestPath")
 	if path != "s3://bucket/ns/pg" {
 		t.Fatalf("rclone path=%q", path)
-	}
-	sec, _, _ := unstructured.NestedString(obj.Object, "spec", "rclone", "rcloneConfig")
-	if sec != rcloneSecretName {
-		t.Fatalf("rcloneConfig=%q", sec)
 	}
 }
 

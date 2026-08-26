@@ -19,6 +19,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -51,9 +52,18 @@ pg_basebackup -h "$PRIMARY_HOST" -p "${PRIMARY_PORT:-5432}" -U replicator -D "$P
 `}
 
 // ensurePrimaryService publishes the source Postgres for dest WAL fetch.
-func (m Mover) ensurePrimaryService(ctx context.Context, w classify.Workload) error {
+func (m Mover) ensurePrimaryService(ctx context.Context, w classify.Workload, address string) error {
 	if m.Kube == nil {
 		return nil
+	}
+	svcType := corev1.ServiceTypeClusterIP
+	ports := []corev1.ServicePort{{Name: "pg", Port: 5432, TargetPort: intstr.FromInt(5432)}}
+	if address != "" {
+		svcType = corev1.ServiceTypeNodePort
+		_, p := splitHostPort(address)
+		if n, err := strconv.Atoi(p); err == nil && n >= 30000 && n <= 32767 {
+			ports[0].NodePort = int32(n)
+		}
 	}
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -62,11 +72,11 @@ func (m Mover) ensurePrimaryService(ctx context.Context, w classify.Workload) er
 			Labels:    map[string]string{"portage.io/name": w.Name, "portage.io/role": "primary"},
 		},
 		Spec: corev1.ServiceSpec{
-			Type: corev1.ServiceTypeLoadBalancer,
+			Type: svcType,
 			Selector: map[string]string{
 				"app": w.Name,
 			},
-			Ports: []corev1.ServicePort{{Name: "pg", Port: 5432, TargetPort: intstr.FromInt(5432)}},
+			Ports: ports,
 		},
 	}
 	_, err := m.Kube.CoreV1().Services(w.Namespace).Create(ctx, svc, metav1.CreateOptions{})
@@ -88,7 +98,7 @@ func (m Mover) ensureReplicatorRole(ctx context.Context, w classify.Workload) er
 	return err
 }
 
-func (m Mover) ensureBasebackupJob(ctx context.Context, w classify.Workload, primaryHost string) error {
+func (m Mover) ensureBasebackupJob(ctx context.Context, w classify.Workload, primaryHost, primaryPort string) error {
 	dest := m.Dest
 	if dest == nil {
 		dest = m.Kube
@@ -114,6 +124,7 @@ func (m Mover) ensureBasebackupJob(ctx context.Context, w classify.Workload, pri
 						Env: []corev1.EnvVar{
 							{Name: "PGDATA", Value: "/var/lib/postgresql/data/pgdata"},
 							{Name: "PRIMARY_HOST", Value: primaryHost},
+							{Name: "PRIMARY_PORT", Value: primaryPort},
 							{Name: "PGPASSWORD", Value: replPass},
 						},
 					}},

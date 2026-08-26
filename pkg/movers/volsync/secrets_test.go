@@ -32,7 +32,7 @@ func TestEnsureSecretsCreatesRcloneAndPSK(t *testing.T) {
 	t.Parallel()
 	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
 	c := objectstore.Creds{AccessKey: "ak", SecretKey: "sk", Endpoint: "http://minio:9000", Region: "us-east-1"}
-	if err := EnsureSecrets(context.Background(), kube, "ns", c); err != nil {
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files"); err != nil {
 		t.Fatal(err)
 	}
 	rclone, err := kube.CoreV1().Secrets("ns").Get(context.Background(), rcloneSecretName, metav1.GetOptions{})
@@ -49,11 +49,24 @@ func TestEnsureSecretsCreatesRcloneAndPSK(t *testing.T) {
 	}
 	// second call must not rotate psk
 	psk := string(tls.Data["psk"])
-	if err := EnsureSecrets(context.Background(), kube, "ns", c); err != nil {
+	restic, err := kube.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := string(restic.Data["RESTIC_REPOSITORY"])
+	if !strings.Contains(repo, "minio:9000") || !strings.Contains(repo, "portage") {
+		t.Fatalf("restic repo=%s", repo)
+	}
+	pw := string(restic.Data["RESTIC_PASSWORD"])
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files"); err != nil {
 		t.Fatal(err)
 	}
 	tls2, _ := kube.CoreV1().Secrets("ns").Get(context.Background(), tlsSecretName, metav1.GetOptions{})
 	if string(tls2.Data["psk"]) != psk {
 		t.Fatal("psk rotated")
+	}
+	restic2, _ := kube.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
+	if string(restic2.Data["RESTIC_PASSWORD"]) != pw {
+		t.Fatal("restic password rotated")
 	}
 }

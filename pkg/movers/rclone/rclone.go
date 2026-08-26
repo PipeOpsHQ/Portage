@@ -29,9 +29,10 @@ import (
 // New returns a VolSync mover pinned to rclone/object-store transport.
 func New(dyn dynamic.Interface, destPath string) volsync.Mover {
 	return volsync.Mover{
-		Dynamic:   dyn,
-		Transport: portagev1alpha1.TransportObjectStore,
-		DestPath:  destPath,
+		Dynamic:     dyn,
+		Transport:   portagev1alpha1.TransportObjectStore,
+		DestPath:    destPath,
+		ObjectMover: "rclone",
 	}
 }
 

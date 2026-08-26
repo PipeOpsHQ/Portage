@@ -63,6 +63,11 @@ spec:
                 description: ClusterRef identifies a Kubernetes cluster the hub can
                   reach.
                 properties:
+                  address:
+                    description: |-
+                      Address is how dest movers reach this cluster, e.g. "192.0.2.10:30432"
+                      for Postgres WAL. Empty means in-cluster DNS (same cluster only).
+                    type: string
                   kubeconfigSecret:
                     description: |-
                       KubeconfigSecret is a Secret containing a kubeconfig used to
@@ -121,6 +126,11 @@ spec:
                 description: ClusterRef identifies a Kubernetes cluster the hub can
                   reach.
                 properties:
+                  address:
+                    description: |-
+                      Address is how dest movers reach this cluster, e.g. "192.0.2.10:30432"
+                      for Postgres WAL. Empty means in-cluster DNS (same cluster only).
+                    type: string
                   kubeconfigSecret:
                     description: |-
                       KubeconfigSecret is a Secret containing a kubeconfig used to

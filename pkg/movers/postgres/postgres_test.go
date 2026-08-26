@@ -18,6 +18,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -57,12 +58,40 @@ func TestReplicateWritesStandbyConfigOnDest(t *testing.T) {
 	if cm.Data["hot_standby"] != "on" || cm.Data["primary_conninfo"] == "" {
 		t.Fatalf("%v", cm.Data)
 	}
+	if want := "host=portage-pg-primary.ns.svc port=5432 user=replicator"; !strings.Contains(cm.Data["primary_conninfo"], want) {
+		t.Fatalf("in-cluster conninfo=%q", cm.Data["primary_conninfo"])
+	}
 	if _, err := dest.BatchV1().Jobs("ns").Get(context.Background(), "portage-basebackup-pg", metav1.GetOptions{}); err != nil {
 		t.Fatalf("basebackup job: %v", err)
 	}
 	pr, _ := m.Probe(context.Background(), w, movers.ClusterHandle{Name: "gcp"})
 	if pr.OK {
 		t.Fatal("probe must wait for pg_basebackup to complete")
+	}
+}
+
+func TestReplicateUsesSourceAddressForWAL(t *testing.T) {
+	t.Parallel()
+	src := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	dest := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	m := Mover{Kube: src, Dest: dest}
+	w := classify.Workload{Namespace: "ns", Name: "pg", Engine: "postgres", Class: portagev1alpha1.ClassSQLLogical}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{Name: "aws", Address: "172.18.0.1:30432"}, movers.ClusterHandle{Name: "gcp"}); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := dest.CoreV1().ConfigMaps("ns").Get(context.Background(), "portage-standby-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cm.Data["primary_conninfo"], "host=172.18.0.1 port=30432") {
+		t.Fatalf("conninfo=%q", cm.Data["primary_conninfo"])
+	}
+	svc, err := src.CoreV1().Services("ns").Get(context.Background(), "portage-pg-primary", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.Spec.Type != corev1.ServiceTypeNodePort || svc.Spec.Ports[0].NodePort != 30432 {
+		t.Fatalf("service=%+v", svc.Spec)
 	}
 }
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Product e2e on two kind clusters:
 #   classify → useless backup fails → useful dump stored → dest restore
-#   is dest (not source), dest pg_isready, dest has the seeded table,
-#   cutover freezes source.
-# E2E_FULL=1 also helm-installs VolSync (does not assert live WAL).
+#   dest Ready+pg_isready+rows, cluster-objects live-sync, PVC dest bytes
+#   via VolSync restic (incremental ObjectStore), cutover freeze.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC=portage-src
@@ -12,9 +11,12 @@ STORE=/tmp/portage-e2e-store
 LOG=/tmp/portage-controller.log
 CTRL_PID=""
 PASSES=0
+MINIO_CID=""
+PG_NODEPORT=30432
 
 cleanup() {
   if [[ -n "${CTRL_PID}" ]]; then kill "${CTRL_PID}" 2>/dev/null || true; fi
+  if [[ -n "${MINIO_CID}" ]]; then docker rm -f portage-minio 2>/dev/null || true; fi
   kind delete cluster --name "$SRC" 2>/dev/null || true
   kind delete cluster --name "$DST" 2>/dev/null || true
 }
@@ -88,10 +90,22 @@ EOF
 need kind
 need kubectl
 need go
+need docker
 
 kind delete cluster --name "$SRC" 2>/dev/null || true
 kind delete cluster --name "$DST" 2>/dev/null || true
-kind create cluster --name "$SRC"
+cat > /tmp/kind-portage-src.yaml <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ${SRC}
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: ${PG_NODEPORT}
+    hostPort: ${PG_NODEPORT}
+    protocol: TCP
+EOF
+kind create cluster --config /tmp/kind-portage-src.yaml
 kind create cluster --name "$DST"
 
 SRC_CTX="kind-${SRC}"
@@ -105,11 +119,38 @@ kd apply -k "${ROOT}/config/crd"
 kc wait --for=condition=Established crd/policies.portage.io --timeout=60s
 kd wait --for=condition=Established crd/actions.portage.io --timeout=60s
 
-if [[ "${E2E_FULL:-}" == "1" ]] && command -v helm >/dev/null; then
+docker rm -f portage-minio 2>/dev/null || true
+docker run -d --name portage-minio --network kind \
+  -p 9000:9000 \
+  -e MINIO_ROOT_USER=portage \
+  -e MINIO_ROOT_PASSWORD=portageportage \
+  minio/minio server /data
+MINIO_CID=portage-minio
+for _ in $(seq 1 20); do
+  if docker run --rm --network kind --entrypoint /bin/sh minio/mc -c \
+    "mc alias set m http://portage-minio:9000 portage portageportage && mc mb -p m/portage" \
+    >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+KIND_GW="$(docker network inspect kind -f '{{(index .IPAM.Config 0).Gateway}}')"
+export PORTAGE_S3_ENDPOINT="http://${KIND_GW}:9000"
+export PORTAGE_S3_ACCESS_KEY=portage
+export PORTAGE_S3_SECRET_KEY=portageportage
+export PORTAGE_S3_BUCKET=portage
+export PORTAGE_VOLSYNC_SCHEDULE="* * * * *"
+echo "  minio endpoint ${PORTAGE_S3_ENDPOINT}"
+
+if command -v helm >/dev/null; then
   helm repo add backube https://backube.github.io/helm-charts/ >/dev/null
   helm repo update >/dev/null
-  helm upgrade --install volsync backube/volsync -n volsync-system --create-namespace --kube-context "$SRC_CTX"
-  helm upgrade --install volsync backube/volsync -n volsync-system --create-namespace --kube-context "$DST_CTX"
+  helm upgrade --install volsync backube/volsync -n volsync-system --create-namespace --kube-context "$SRC_CTX" --wait --timeout 180s
+  helm upgrade --install volsync backube/volsync -n volsync-system --create-namespace --kube-context "$DST_CTX" --wait --timeout 180s
+  VOLSYNC=1
+else
+  VOLSYNC=0
+  echo "WARN: helm not found; skipping VolSync PVC byte assert"
 fi
 
 kc create ns pg || true
@@ -158,7 +199,7 @@ kc -n portage-system create secret generic dest-kubeconfig \
   --from-file=kubeconfig=/tmp/portage-dst.kubeconfig --dry-run=client -o yaml | kc apply -f -
 
 # No RPO: e2e creates Backup Actions by name so empty vs useful are distinct.
-cat <<'EOF' | kc apply -f -
+cat <<EOF | kc apply -f -
 apiVersion: portage.io/v1alpha1
 kind: ClusterPair
 metadata:
@@ -166,11 +207,14 @@ metadata:
 spec:
   source:
     name: src
+    address: ${KIND_GW}:${PG_NODEPORT}
   destination:
     name: dst
     kubeconfigSecret:
       name: dest-kubeconfig
       namespace: portage-system
+    objectStore:
+      url: s3://portage/e2e
   transport: ObjectStore
 ---
 apiVersion: portage.io/v1alpha1
@@ -191,7 +235,13 @@ EOF
 
 mkdir -p "$STORE"
 kind get kubeconfig --name "$SRC" > /tmp/portage-src.kubeconfig
-PORTAGE_STORE_DIR="$STORE" KUBECONFIG=/tmp/portage-src.kubeconfig /tmp/portage-controller \
+PORTAGE_STORE_DIR="$STORE" \
+PORTAGE_S3_ENDPOINT="$PORTAGE_S3_ENDPOINT" \
+PORTAGE_S3_ACCESS_KEY="$PORTAGE_S3_ACCESS_KEY" \
+PORTAGE_S3_SECRET_KEY="$PORTAGE_S3_SECRET_KEY" \
+PORTAGE_S3_BUCKET="$PORTAGE_S3_BUCKET" \
+PORTAGE_VOLSYNC_SCHEDULE="$PORTAGE_VOLSYNC_SCHEDULE" \
+KUBECONFIG=/tmp/portage-src.kubeconfig /tmp/portage-controller \
   --leader-elect=false \
   --metrics-bind-address=:18080 \
   --health-probe-bind-address=:18081 \
@@ -371,6 +421,131 @@ repl_phase=$(kc -n apps get action replicate-objects -o jsonpath='{.status.phase
 [[ "$repl_phase" == "CatchingUp" ]] || die "live replicate must stay CatchingUp, got $repl_phase"
 [[ "$repl_phase" != "Succeeded" ]] || die "live replicate must not Succeeded"
 pass "cluster-objects replicate stays CatchingUp and live-updated dest k=v2"
+
+# --- PVC incremental: VolSync restic ObjectStore, dest bytes not just lastSyncTime ---
+if [[ "${VOLSYNC}" == "1" ]]; then
+  kc create ns files || true
+  kd create ns files || true
+  cat <<'EOF' | kc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data, namespace: files }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 64Mi } }
+EOF
+  cat <<'EOF' | kd apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data, namespace: files }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 64Mi } }
+EOF
+  write_marker() {
+    local ctx=$1 val=$2
+    kubectl --context "$ctx" -n files delete job write-marker --ignore-not-found >/dev/null 2>&1 || true
+    cat <<EOF | kubectl --context "$ctx" -n files apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata: { name: write-marker }
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: w
+        image: busybox:1.36
+        command: ["sh", "-c", "echo ${val} > /data/marker && dd if=/dev/zero bs=1024 count=64 >> /data/marker"]
+        volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: data }
+EOF
+    kubectl --context "$ctx" -n files wait --for=condition=complete job/write-marker --timeout=120s
+  }
+  read_marker() {
+    local ctx=$1
+    kubectl --context "$ctx" -n files delete job read-marker --ignore-not-found >/dev/null 2>&1 || true
+    cat <<'EOF' | kubectl --context "$ctx" -n files apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata: { name: read-marker }
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: r
+        image: busybox:1.36
+        command: ["sh", "-c", "head -n 1 /data/marker"]
+        volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: data }
+EOF
+    if kubectl --context "$ctx" -n files wait --for=condition=complete job/read-marker --timeout=90s >/dev/null 2>&1; then
+      kubectl --context "$ctx" -n files logs job/read-marker
+    else
+      echo ""
+    fi
+  }
+  release_dest_mover() {
+    kd -n files delete replicationdestination --all --wait=true >/dev/null 2>&1 || true
+    sleep 8
+  }
+  write_marker "$SRC_CTX" v1
+  cat <<'EOF' | kc apply -f -
+apiVersion: portage.io/v1alpha1
+kind: Policy
+metadata:
+  name: files
+  namespace: files
+spec:
+  clusterPair: kind-pair
+  selector:
+    namespaces: [files]
+  replicate:
+    enabled: true
+    rpo: 1m
+  renderer:
+    kind: Sanitize
+EOF
+  wait_action_in files replicate-files CatchingUp 40
+  got=""
+  for _ in $(seq 1 30); do
+    src_sync=$(kc -n files get replicationsources.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
+    dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
+    echo "  volsync lastSyncTime src=${src_sync:-none} dest=${dst_sync:-none}"
+    if [[ -n "$src_sync" && -n "$dst_sync" ]]; then
+      release_dest_mover
+      got=$(read_marker "$DST_CTX" | tail -n 1 | tr -d '[:space:]' || true)
+      echo "  dest marker=$got"
+      [[ "$got" == v1* ]] && break
+    fi
+    sleep 10
+  done
+  [[ "$got" == v1* ]] || die "dest PVC missing marker v1 (lastSyncTime is not dest bytes)"
+  pass "PVC dest bytes after restic sync (lastSyncTime + marker v1)"
+  kc -n files delete replicationsource --all --wait=true >/dev/null 2>&1 || true
+  write_marker "$SRC_CTX" v2
+  got=""
+  for _ in $(seq 1 30); do
+    dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
+    echo "  volsync dest lastSyncTime=${dst_sync:-none}"
+    if [[ -n "$dst_sync" ]]; then
+      release_dest_mover
+      got=$(read_marker "$DST_CTX" | tail -n 1 | tr -d '[:space:]' || true)
+      echo "  dest marker after increment=$got"
+      [[ "$got" == v2* ]] && break
+    fi
+    sleep 10
+  done
+  [[ "$got" == v2* ]] || die "dest PVC did not pick up incremental v2"
+  pass "PVC incremental dest marker v2"
+else
+  echo "SKIP: VolSync PVC byte assert (helm not installed)"
+fi
 
 # --- cutover freeze: source writes paused ---
 apply_action cutover-pg Cutover
