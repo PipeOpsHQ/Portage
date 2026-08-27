@@ -29,8 +29,14 @@ die() {
   kubectl --context "${SRC_CTX:-}" -n pg get policy,action -o yaml 2>/dev/null || true
   kubectl --context "${SRC_CTX:-}" get clusterpair -o yaml 2>/dev/null || true
   kubectl --context "${DST_CTX:-}" -n pg get sts,pod 2>/dev/null || true
+  kubectl --context "${SRC_CTX:-}" -n files get pvc,job,replicationsources.volsync.backube -o yaml 2>/dev/null || true
+  kubectl --context "${DST_CTX:-}" -n files get pvc,job,replicationdestinations.volsync.backube -o yaml 2>/dev/null || true
   tail -n 120 "$LOG" 2>/dev/null || true
   exit 1
+}
+
+kind_net_ip() {
+  docker inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "$1" 2>/dev/null || true
 }
 
 kc() { kubectl --context "$SRC_CTX" "$@"; }
@@ -134,13 +140,26 @@ for _ in $(seq 1 20); do
   fi
   sleep 2
 done
-KIND_GW="$(docker network inspect kind -f '{{(index .IPAM.Config 0).Gateway}}')"
-export PORTAGE_S3_ENDPOINT="http://${KIND_GW}:9000"
+docker network connect kind portage-minio 2>/dev/null || true
+MINIO_IP="$(kind_net_ip portage-minio)"
+SRC_IP="$(kind_net_ip "${SRC}-control-plane")"
+KIND_GW="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").Gateway}}' "${SRC}-control-plane" 2>/dev/null || true)"
+if [[ -z "$MINIO_IP" || "$MINIO_IP" == "<no value>" ]]; then
+  die "minio has no kind-network IP"
+fi
+if [[ -z "$SRC_IP" || "$SRC_IP" == "<no value>" ]]; then
+  die "kind src node has no kind-network IP"
+fi
+# Pods reach MinIO at the container IP on the kind network (not host Gateway,
+# which is empty on some Docker IPAM configs — we shipped address=:30432).
+export PORTAGE_S3_ENDPOINT="http://${MINIO_IP}:9000"
 export PORTAGE_S3_ACCESS_KEY=portage
 export PORTAGE_S3_SECRET_KEY=portageportage
 export PORTAGE_S3_BUCKET=portage
 export PORTAGE_VOLSYNC_SCHEDULE="* * * * *"
-echo "  minio endpoint ${PORTAGE_S3_ENDPOINT}"
+# Dest pods reach source NodePort via the src kind node IP, not host extraPortMappings.
+KIND_GW="$SRC_IP"
+echo "  minio endpoint ${PORTAGE_S3_ENDPOINT} src node ${SRC_IP}"
 
 if command -v helm >/dev/null; then
   helm repo add backube https://backube.github.io/helm-charts/ >/dev/null
@@ -463,6 +482,8 @@ spec:
         persistentVolumeClaim: { claimName: data }
 EOF
     kubectl --context "$ctx" -n files wait --for=condition=complete job/write-marker --timeout=120s
+    # Completed Job pods still hold RWO PVCs; VolSync Direct cannot mount until gone.
+    kubectl --context "$ctx" -n files delete job write-marker --wait=true >/dev/null 2>&1 || true
   }
   read_marker() {
     local ctx=$1
@@ -486,6 +507,7 @@ spec:
 EOF
     if kubectl --context "$ctx" -n files wait --for=condition=complete job/read-marker --timeout=90s >/dev/null 2>&1; then
       kubectl --context "$ctx" -n files logs job/read-marker
+      kubectl --context "$ctx" -n files delete job read-marker --wait=true >/dev/null 2>&1 || true
     else
       echo ""
     fi
@@ -517,6 +539,8 @@ EOF
     src_sync=$(kc -n files get replicationsources.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
     dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
     echo "  volsync lastSyncTime src=${src_sync:-none} dest=${dst_sync:-none}"
+    kc -n files get replicationsources.volsync.backube 2>/dev/null || echo "  no src ReplicationSource"
+    kd -n files get replicationdestinations.volsync.backube 2>/dev/null || echo "  no dest ReplicationDestination"
     if [[ -n "$src_sync" && -n "$dst_sync" ]]; then
       release_dest_mover
       got=$(read_marker "$DST_CTX" | tail -n 1 | tr -d '[:space:]' || true)

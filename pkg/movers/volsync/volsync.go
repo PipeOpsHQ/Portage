@@ -121,7 +121,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	name := "portage-" + w.Name
 	src := m.source(w, name, pvc)
 	_, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Create(ctx, src, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) && !errors.IsNotFound(err) {
+	if err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("volsync source: %w", err)
 	}
 	dstClient := m.destDyn()
@@ -130,7 +130,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	}
 	dst := m.destination(w, name)
 	_, err = dstClient.Resource(dstGVR).Namespace(w.Namespace).Create(ctx, dst, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) && !errors.IsNotFound(err) {
+	if err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("volsync destination: %w", err)
 	}
 	return nil
