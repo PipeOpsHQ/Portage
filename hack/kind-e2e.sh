@@ -141,23 +141,25 @@ for _ in $(seq 1 20); do
   sleep 2
 done
 docker network connect kind portage-minio 2>/dev/null || true
-MINIO_IP="$(kind_net_ip portage-minio)"
 SRC_IP="$(kind_net_ip "${SRC}-control-plane")"
-KIND_GW="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").Gateway}}' "${SRC}-control-plane" 2>/dev/null || true)"
-if [[ -z "$MINIO_IP" || "$MINIO_IP" == "<no value>" ]]; then
-  die "minio has no kind-network IP"
+# Mover pods cannot use another container's kind-network IP (CNI overlay).
+# They SNAT through the node; the node's default gateway reaches host:9000
+# where MinIO is published (-p 9000:9000).
+S3_HOST="$(docker exec "${SRC}-control-plane" sh -c "ip -4 route show default | awk '{print \$3; exit}'" 2>/dev/null || true)"
+if [[ -z "$S3_HOST" ]]; then
+  S3_HOST="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").Gateway}}' "${SRC}-control-plane" 2>/dev/null || true)"
+fi
+if [[ -z "$S3_HOST" || "$S3_HOST" == "<no value>" ]]; then
+  die "could not find host route for MinIO from kind src node"
 fi
 if [[ -z "$SRC_IP" || "$SRC_IP" == "<no value>" ]]; then
   die "kind src node has no kind-network IP"
 fi
-# Pods reach MinIO at the container IP on the kind network (not host Gateway,
-# which is empty on some Docker IPAM configs — we shipped address=:30432).
-export PORTAGE_S3_ENDPOINT="http://${MINIO_IP}:9000"
+export PORTAGE_S3_ENDPOINT="http://${S3_HOST}:9000"
 export PORTAGE_S3_ACCESS_KEY=portage
 export PORTAGE_S3_SECRET_KEY=portageportage
 export PORTAGE_S3_BUCKET=portage
 export PORTAGE_VOLSYNC_SCHEDULE="* * * * *"
-# Dest pods reach source NodePort via the src kind node IP, not host extraPortMappings.
 KIND_GW="$SRC_IP"
 echo "  minio endpoint ${PORTAGE_S3_ENDPOINT} src node ${SRC_IP}"
 

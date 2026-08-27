@@ -698,15 +698,17 @@ func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep cluste
 		Transport: t, DestPath: path, Creds: creds,
 		Schedule: os.Getenv("PORTAGE_VOLSYNC_SCHEDULE"), SnapshotClass: snapClass,
 	}
+	reg.Register(m)
 	if t == portagev1alpha1.TransportObjectStore {
 		rc := rclone.New(dyn, path)
 		rc.DestDynamic = destDyn
 		rc.Kube = ep.Source.Kube
 		rc.DestKube = ep.Dest.Kube
 		rc.Creds = creds
+		rc.Schedule = m.Schedule
+		rc.SnapshotClass = snapClass
 		reg.Register(rc)
 	}
-	reg.Register(m)
 	return reg
 }
 

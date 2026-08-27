@@ -182,7 +182,7 @@ func synced(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionR
 func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstructured {
 	spec := map[string]any{
 		"sourcePVC": pvc,
-		"trigger":   map[string]any{"schedule": m.schedule()},
+		"trigger":   m.trigger(),
 	}
 	if m.Transport == portagev1alpha1.TransportObjectStore {
 		if m.ObjectMover == "rclone" {
@@ -213,7 +213,7 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 	if m.Transport == portagev1alpha1.TransportObjectStore {
 		// Dest must pull on a schedule. A one-shot manual trigger is the
 		// live-sync hole: source keeps snapshotting, dest never applies.
-		spec["trigger"] = map[string]any{"schedule": m.schedule()}
+		spec["trigger"] = m.trigger()
 		if m.ObjectMover == "rclone" {
 			spec["rclone"] = m.rcloneSpec(w)
 		} else {
@@ -283,6 +283,14 @@ func (m Mover) copyMethod() string {
 	// Direct works on kind local-path (no CSI snapshots). Snapshot when a
 	// VolumeSnapshotClass is mapped on the ClusterPair.
 	return "Direct"
+}
+
+func (m Mover) trigger() map[string]any {
+	return map[string]any{
+		"schedule": m.schedule(),
+		// First sync must not wait for the next cron tick (e2e + live replica).
+		"manual": "portage-1",
+	}
 }
 
 func (m Mover) schedule() string {

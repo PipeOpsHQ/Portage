@@ -64,6 +64,10 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	if sched == "" {
 		t.Fatal("dest must schedule-pull; manual trigger is the live-sync hole")
 	}
+	manual, _, _ := unstructured.NestedString(src.Object, "spec", "trigger", "manual")
+	if manual == "" {
+		t.Fatal("source must fire immediately (manual trigger), not wait for cron")
+	}
 }
 
 func TestReplicateObjectStoreRcloneOverride(t *testing.T) {
