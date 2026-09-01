@@ -144,6 +144,44 @@ func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespac
 	return ignoreExists(err)
 }
 
+// CopySecrets clones rclone/restic/rsyncTLS secrets from source to dest.
+// Restic passwords and rsyncTLS PSKs must match across clusters or dest
+// cannot read the source repo / TLS peer.
+func CopySecrets(ctx context.Context, src, dst kubernetes.Interface, namespace string) error {
+	if src == nil || dst == nil || src == dst || namespace == "" {
+		return nil
+	}
+	for _, name := range []string{rcloneSecretName, resticSecretName, tlsSecretName} {
+		sec, err := src.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		cur, err := dst.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			out := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
+				Type:       sec.Type,
+				Data:       sec.Data,
+			}
+			if _, err = dst.CoreV1().Secrets(namespace).Create(ctx, out, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+				return fmt.Errorf("copy %s: %w", name, err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("copy %s: %w", name, err)
+		}
+		cur.Data = sec.Data
+		if _, err = dst.CoreV1().Secrets(namespace).Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("copy %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func ignoreExists(err error) error {
 	if errors.IsAlreadyExists(err) {
 		return nil

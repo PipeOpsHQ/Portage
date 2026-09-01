@@ -113,7 +113,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return fmt.Errorf("volsync source secrets: %w", err)
 	}
 	if dk := m.destKube(); dk != nil && dk != m.Kube {
-		if err := EnsureSecrets(ctx, dk, w.Namespace, m.Creds, path); err != nil {
+		if err := CopySecrets(ctx, m.Kube, dk, w.Namespace); err != nil {
 			return fmt.Errorf("volsync dest secrets: %w", err)
 		}
 	}
@@ -217,13 +217,7 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 		if m.ObjectMover == "rclone" {
 			spec["rclone"] = m.rcloneSpec(w)
 		} else {
-			rs := m.resticSpec()
-			if len(w.PVCNames) > 0 {
-				rs["destinationPVC"] = w.PVCNames[0]
-			}
-			rs["accessModes"] = []any{"ReadWriteOnce"}
-			rs["capacity"] = "1Gi"
-			spec["restic"] = rs
+			spec["restic"] = m.destResticSpec(w)
 		}
 	} else {
 		spec["rsyncTLS"] = map[string]any{
@@ -250,6 +244,27 @@ func (m Mover) resticSpec() map[string]any {
 		"cacheCapacity":     "1Gi",
 		"pruneIntervalDays": int64(7),
 		"retain":            map[string]any{"hourly": int64(3), "daily": int64(1)},
+	}
+	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
+		spec["volumeSnapshotClassName"] = m.SnapshotClass
+	}
+	return spec
+}
+
+// destResticSpec is the restore-side restic block. pruneIntervalDays/retain
+// exist only on ReplicationSource; putting them on dest is a field-validation
+// warning and does not restore bytes.
+func (m Mover) destResticSpec(w classify.Workload) map[string]any {
+	spec := map[string]any{
+		"repository":    resticSecretName,
+		"copyMethod":    m.copyMethod(),
+		"cacheCapacity": "1Gi",
+	}
+	if len(w.PVCNames) > 0 {
+		spec["destinationPVC"] = w.PVCNames[0]
+	} else {
+		spec["accessModes"] = []any{"ReadWriteOnce"}
+		spec["capacity"] = "1Gi"
 	}
 	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
 		spec["volumeSnapshotClassName"] = m.SnapshotClass
@@ -286,11 +301,11 @@ func (m Mover) copyMethod() string {
 }
 
 func (m Mover) trigger() map[string]any {
-	return map[string]any{
-		"schedule": m.schedule(),
-		// First sync must not wait for the next cron tick (e2e + live replica).
-		"manual": "portage-1",
-	}
+	// Schedule only. VolSync's initial state always starts a sync immediately;
+	// after that the cron fires incrementals. Setting trigger.manual alongside
+	// schedule makes VolSync treat the CR as manual-only, so once lastManualSync
+	// matches, incrementals never run.
+	return map[string]any{"schedule": m.schedule()}
 }
 
 func (m Mover) schedule() string {

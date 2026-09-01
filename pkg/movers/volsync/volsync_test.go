@@ -64,9 +64,16 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	if sched == "" {
 		t.Fatal("dest must schedule-pull; manual trigger is the live-sync hole")
 	}
-	manual, _, _ := unstructured.NestedString(src.Object, "spec", "trigger", "manual")
-	if manual == "" {
-		t.Fatal("source must fire immediately (manual trigger), not wait for cron")
+	manual, found, _ := unstructured.NestedString(src.Object, "spec", "trigger", "manual")
+	if found && manual != "" {
+		t.Fatal("manual+schedule makes VolSync ignore the cron; incrementals never fire")
+	}
+	if _, found, _ := unstructured.NestedFieldNoCopy(dst.Object, "spec", "restic", "pruneIntervalDays"); found {
+		t.Fatal("dest restic must not set source-only pruneIntervalDays")
+	}
+	destPVC, _, _ := unstructured.NestedString(dst.Object, "spec", "restic", "destinationPVC")
+	if destPVC != "data-pg" {
+		t.Fatalf("dest destinationPVC=%q", destPVC)
 	}
 }
 

@@ -10,6 +10,8 @@
   `replicate.enabled` keeps one `replicate-<policy>` Action running
 - VolSync ObjectStore uses restic (incremental) and dest schedule-pull;
   `ClusterRef.address` for dest→source Postgres WAL; e2e asserts dest PVC bytes
+- Kind e2e installs VolumeSnapshot CRDs (VolSync requires them even for Direct),
+  copies restic secrets to dest, and serves MinIO on the src kind node IP
 
 ## [0.1.0] - 2026-08-25
 

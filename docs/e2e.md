@@ -19,7 +19,10 @@ make e2e
 | PVC bytes | VolSync restic `lastSyncTime` **and** dest PVC marker file; second write lands (incremental) |
 | Cutover freeze | source replicas **0**, dest STS still present |
 
-CI: `.github/workflows/e2e.yaml` (40 minute timeout). Helm + MinIO on the kind network. `ClusterPair.spec.source.address` is the host gateway NodePort for Postgres WAL.
+CI: `.github/workflows/e2e.yaml` (40 minute timeout). Snapshot CRDs + Helm VolSync.
+MinIO shares the source kind node's netns (`SRC_IP:9000`) so mover pods on both
+clusters can reach it. `ClusterPair.spec.source.address` is dest→source WAL
+(NodePort on the src kind node).
 
 ## Next
 

@@ -29,8 +29,11 @@ die() {
   kubectl --context "${SRC_CTX:-}" -n pg get policy,action -o yaml 2>/dev/null || true
   kubectl --context "${SRC_CTX:-}" get clusterpair -o yaml 2>/dev/null || true
   kubectl --context "${DST_CTX:-}" -n pg get sts,pod 2>/dev/null || true
-  kubectl --context "${SRC_CTX:-}" -n files get pvc,job,replicationsources.volsync.backube -o yaml 2>/dev/null || true
-  kubectl --context "${DST_CTX:-}" -n files get pvc,job,replicationdestinations.volsync.backube -o yaml 2>/dev/null || true
+  kubectl --context "${SRC_CTX:-}" -n files get pvc,pod,job,event,secret,replicationsources.volsync.backube -o yaml 2>/dev/null | sed '/RESTIC_PASSWORD\|AWS_SECRET\|psk:/,+1d' || true
+  kubectl --context "${DST_CTX:-}" -n files get pvc,pod,job,event,secret,replicationdestinations.volsync.backube -o yaml 2>/dev/null | sed '/RESTIC_PASSWORD\|AWS_SECRET\|psk:/,+1d' || true
+  kubectl --context "${SRC_CTX:-}" -n volsync-system get pod 2>/dev/null || true
+  kubectl --context "${SRC_CTX:-}" -n volsync-system logs deploy/volsync --tail=80 2>/dev/null || true
+  kubectl --context "${DST_CTX:-}" -n volsync-system logs deploy/volsync --tail=80 2>/dev/null || true
   tail -n 120 "$LOG" 2>/dev/null || true
   exit 1
 }
@@ -125,37 +128,43 @@ kd apply -k "${ROOT}/config/crd"
 kc wait --for=condition=Established crd/policies.portage.io --timeout=60s
 kd wait --for=condition=Established crd/actions.portage.io --timeout=60s
 
+# VolSync Owns VolumeSnapshot; without the CRD the operator never becomes
+# Ready (kind has no snapshot controller) and restic jobs are never created.
+SNAP_CRD=https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.2.1/client/config/crd
+for crd in snapshot.storage.k8s.io_volumesnapshotclasses.yaml \
+           snapshot.storage.k8s.io_volumesnapshotcontents.yaml \
+           snapshot.storage.k8s.io_volumesnapshots.yaml; do
+  kc apply -f "${SNAP_CRD}/${crd}"
+  kd apply -f "${SNAP_CRD}/${crd}"
+done
+kc wait --for=condition=Established crd/volumesnapshots.snapshot.storage.k8s.io --timeout=60s
+kd wait --for=condition=Established crd/volumesnapshots.snapshot.storage.k8s.io --timeout=60s
+
+SRC_IP="$(kind_net_ip "${SRC}-control-plane")"
+if [[ -z "$SRC_IP" || "$SRC_IP" == "<no value>" ]]; then
+  die "kind src node has no kind-network IP"
+fi
+# Share the src node's netns so MinIO listens on SRC_IP:9000. Src and dest
+# mover pods reach that address via the kind network (CNI overlay cannot hit
+# a sibling docker container IP; host:9000 hairpins on GHA).
 docker rm -f portage-minio 2>/dev/null || true
-docker run -d --name portage-minio --network kind \
-  -p 9000:9000 \
+docker run -d --name portage-minio --network "container:${SRC}-control-plane" \
   -e MINIO_ROOT_USER=portage \
   -e MINIO_ROOT_PASSWORD=portageportage \
   minio/minio server /data
 MINIO_CID=portage-minio
+mc_ok=0
 for _ in $(seq 1 20); do
-  if docker run --rm --network kind --entrypoint /bin/sh minio/mc -c \
-    "mc alias set m http://portage-minio:9000 portage portageportage && mc mb -p m/portage" \
+  if docker run --rm --network "container:${SRC}-control-plane" --entrypoint /bin/sh minio/mc -c \
+    "mc alias set m http://127.0.0.1:9000 portage portageportage && mc mb -p m/portage" \
     >/dev/null 2>&1; then
+    mc_ok=1
     break
   fi
   sleep 2
 done
-docker network connect kind portage-minio 2>/dev/null || true
-SRC_IP="$(kind_net_ip "${SRC}-control-plane")"
-# Mover pods cannot use another container's kind-network IP (CNI overlay).
-# They SNAT through the node; the node's default gateway reaches host:9000
-# where MinIO is published (-p 9000:9000).
-S3_HOST="$(docker exec "${SRC}-control-plane" sh -c "ip -4 route show default | awk '{print \$3; exit}'" 2>/dev/null || true)"
-if [[ -z "$S3_HOST" ]]; then
-  S3_HOST="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").Gateway}}' "${SRC}-control-plane" 2>/dev/null || true)"
-fi
-if [[ -z "$S3_HOST" || "$S3_HOST" == "<no value>" ]]; then
-  die "could not find host route for MinIO from kind src node"
-fi
-if [[ -z "$SRC_IP" || "$SRC_IP" == "<no value>" ]]; then
-  die "kind src node has no kind-network IP"
-fi
-export PORTAGE_S3_ENDPOINT="http://${S3_HOST}:9000"
+[[ "$mc_ok" == "1" ]] || die "minio never accepted mc on src node :9000"
+export PORTAGE_S3_ENDPOINT="http://${SRC_IP}:9000"
 export PORTAGE_S3_ACCESS_KEY=portage
 export PORTAGE_S3_SECRET_KEY=portageportage
 export PORTAGE_S3_BUCKET=portage
@@ -447,6 +456,9 @@ pass "cluster-objects replicate stays CatchingUp and live-updated dest k=v2"
 if [[ "${VOLSYNC}" == "1" ]]; then
   kc create ns files || true
   kd create ns files || true
+  # local-path volumes are root-owned; VolSync restic is non-root unless allowed.
+  kc annotate ns files volsync.backube/privileged-movers=true --overwrite >/dev/null
+  kd annotate ns files volsync.backube/privileged-movers=true --overwrite >/dev/null
   cat <<'EOF' | kc apply -f -
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -541,8 +553,8 @@ EOF
     src_sync=$(kc -n files get replicationsources.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
     dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
     echo "  volsync lastSyncTime src=${src_sync:-none} dest=${dst_sync:-none}"
-    kc -n files get replicationsources.volsync.backube 2>/dev/null || echo "  no src ReplicationSource"
-    kd -n files get replicationdestinations.volsync.backube 2>/dev/null || echo "  no dest ReplicationDestination"
+    kc -n files get replicationsources.volsync.backube,pod,job 2>/dev/null || echo "  no src ReplicationSource"
+    kd -n files get replicationdestinations.volsync.backube,pod,job,pvc 2>/dev/null || echo "  no dest ReplicationDestination"
     if [[ -n "$src_sync" && -n "$dst_sync" ]]; then
       release_dest_mover
       got=$(read_marker "$DST_CTX" | tail -n 1 | tr -d '[:space:]' || true)
