@@ -59,7 +59,7 @@ usefulness-gated backup, kind product e2e. Canonical docs:
 
 Three kinds, on purpose:
 
-- **`ClusterPair`** — two clusters, transport (`Direct` \| `ObjectStore`), StorageClass maps
+- **`ClusterPair`** — two clusters (kubeconfig, Azure AD, AWS IAM, or GCP), transport (`Direct` \| `ObjectStore`), StorageClass maps
 - **`Policy`** — what to back up, replicate, auto-restore, how to render dest manifests
 - **`Action`** — one run (`Backup` \| `Restore` \| `Replicate` \| `Cutover`)
 

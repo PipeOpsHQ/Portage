@@ -42,7 +42,8 @@ Each `ClusterRef` uses **exactly one** auth method (or none = in-cluster):
 | `aws` | IAM → EKS token (`IRSA` / instance role / keys, optional `roleARN`) |
 | `gcp` | ADC / Workload Identity / `key.json` → GKE |
 
-Do not set two methods on the same ref. Cloud auth refreshes tokens in-process so the hub image does not ship `aws`, `kubelogin`, or `gcloud`.
+Do not set two methods on the same ref. Full YAML, IAM, and private-endpoint
+notes: [Cluster auth](cluster-auth.md).
 
 ## Policy (namespaced)
 
@@ -110,5 +111,6 @@ after preflight.
 
 ## Next
 
+- [Cluster auth](cluster-auth.md)
 - [Backup & restore](backup-restore.md)
 - [Replication & cutover](cutover.md)

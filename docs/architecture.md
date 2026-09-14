@@ -67,7 +67,8 @@ rsync-TLS is optional when clusters can peer.
 
 ### ClusterPair (cluster-scoped)
 
-Source + dest cluster refs, transport, StorageClass maps.
+Source + dest cluster refs (kubeconfig **or** Azure/AWS/GCP identity),
+transport, StorageClass maps. See [Cluster auth](cluster-auth.md).
 
 ### Policy (namespaced)
 
@@ -156,9 +157,9 @@ database path.
 
 All nine original waves plus the closing gap are in-tree **and wired**:
 
-- Dual-cluster `Resolve` is set on Policy and Action reconcilers; dest kubeconfigs
-  are read via client-go (the manager cache does not watch Secrets). Azure/AWS/GCP
-  auth mints refreshable API tokens so the hub does not embed cloud CLIs
+- Dual-cluster `Resolve` is set on Policy and Action reconcilers; dest clients
+  come from kubeconfig Secrets (via client-go, not the manager cache) or
+  Azure/AWS/GCP token sources so the hub does not embed cloud CLIs
 - Object-store dumps (`pg_dump` of the engine DB → Store) that survive a cloud boundary
 - Dest apply uses `Policy.spec.renderer` (`Sanitize` | `Git` | `Webhook`); output is still sanitized
 - Postgres standby ConfigMap on dest; cutover rollback unfreezes source

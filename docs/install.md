@@ -67,7 +67,7 @@ in a Secret:
 - **AKS:** Azure Workload Identity; `ClusterRef.azure.resourceID`
 - **GKE:** Workload Identity; `ClusterRef.gcp.project` + `location` + `cluster`
 
-See [Configuration](configuration.md#cluster-auth).
+See [Cluster auth](cluster-auth.md).
 
 ## Next
 
@@ -75,5 +75,6 @@ Hub is up. Next is how Portage decides what to copy and when a restore is
 actually done:
 
 - [Concepts](concepts.md) — classify, usefulness, dual cluster, class probes
+- [Cluster auth](cluster-auth.md) — kubeconfig, Azure AD, AWS IAM, GCP
 - [CRDs](crds.md) — ClusterPair, Policy, Action
 - [Backup & restore](backup-restore.md)

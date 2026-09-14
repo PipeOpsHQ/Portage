@@ -61,6 +61,7 @@ nav:
   - Home: index.md
   - Install: install.md
   - Concepts: concepts.md
+  - Cluster auth: cluster-auth.md
   - CRDs: crds.md
   - Backup & restore: backup-restore.md
   - Replication & cutover: cutover.md

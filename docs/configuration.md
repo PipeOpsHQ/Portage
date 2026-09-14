@@ -24,17 +24,8 @@ source WAL. Empty = in-cluster DNS only.
 
 ## Cluster auth
 
-`ClusterPair.spec.source` / `.destination` take **one** of:
-
-| Auth | Hub identity | Notes |
-|---|---|---|
-| *(omit)* | in-cluster | This controller's API |
-| `kubeconfigSecret` | Secret key (default `kubeconfig`) | Tokens in the file expire; prefer cloud auth |
-| `azure` | Workload Identity / `DefaultAzureCredential`, or Secret `tenantID`+`clientID`+`clientSecret` | `resourceID` is the AKS ARM id |
-| `aws` | IRSA / instance role / Secret keys; optional `roleARN` | `clusterName` + `region`; token is `k8s-aws-v1.` |
-| `gcp` | ADC / GKE Workload Identity, or Secret `key.json` | `project`, `location`, `cluster` |
-
-Private API servers: `azure.usePrivateFQDN`, `aws.endpoint`, `gcp.usePrivateEndpoint`.
+See [Cluster auth](cluster-auth.md). `ClusterRef` is **one** of kubeconfig,
+Azure Entra ID, AWS IAM, or GCP ADC (or empty = this hub cluster).
 
 ## Kind e2e
 
@@ -49,6 +40,7 @@ replayed rows, PVC dest bytes, cutover freeze).
 
 ## Next
 
+- [Cluster auth](cluster-auth.md)
 - [CLI](cli.md)
 - [E2e](e2e.md)
 - [Architecture](architecture.md)

@@ -27,7 +27,7 @@ kubectl -n tenant-a get action backup-1 -w
 2. Export source objects, render dest (`Sanitize`, `Git`, or `Webhook`; always
    sanitized after).
 3. Apply to **dest** (PVC first, then STS/Deploy) using the ClusterPair dest
-   kubeconfig — not the hub cache.
+   client (kubeconfig or cloud identity) — not the hub cache.
 4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql`
    stdin. Dump apply runs **once** (re-psql every reconcile hangs exec).
 5. Heal Pending topology/SC.

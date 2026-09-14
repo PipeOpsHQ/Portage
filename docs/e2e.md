@@ -1,7 +1,8 @@
 # Kind e2e
 
 Two kind clusters. The hub runs against source; dest is reached via a
-kubeconfig Secret. This is the product check, not “STS exists.”
+kubeconfig Secret (cloud identity is [Cluster auth](cluster-auth.md)). This is
+the product check, not “STS exists.”
 
 ```bash
 make e2e

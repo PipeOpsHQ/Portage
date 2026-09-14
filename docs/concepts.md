@@ -63,6 +63,7 @@ That is the Velero trap Portage exists to close.
 ## Next
 
 - [CRDs](crds.md) — ClusterPair, Policy, Action
+- [Cluster auth](cluster-auth.md) — kubeconfig, Azure AD, AWS IAM, GCP
 - [Backup & restore](backup-restore.md)
 
 ## Plugins
