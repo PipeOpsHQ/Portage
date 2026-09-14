@@ -49,6 +49,7 @@ import (
 	pgmover "github.com/PipeOpsHQ/portage/pkg/movers/postgres"
 	"github.com/PipeOpsHQ/portage/pkg/movers/rclone"
 	"github.com/PipeOpsHQ/portage/pkg/movers/volsync"
+	whmover "github.com/PipeOpsHQ/portage/pkg/movers/webhook"
 	"github.com/PipeOpsHQ/portage/pkg/objectstore"
 	"github.com/PipeOpsHQ/portage/pkg/probe"
 	"github.com/PipeOpsHQ/portage/pkg/render"
@@ -112,6 +113,7 @@ func (r *ActionReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=portage.io,resources=actions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=portage.io,resources=actions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=portage.io,resources=clusterpairs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=portage.io,resources=plugins,verbs=get;list;watch
 // +kubebuilder:rbac:groups=portage.io,resources=policies,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources;replicationdestinations,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=portage.io,resources=policies/status,verbs=get;update;patch
@@ -225,6 +227,7 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
+	reg := r.registry(ctx, pair, ep)
 	snaps := snapshots.Client{Dynamic: ep.Source.Dynamic}
 	arts := make([]portagev1alpha1.ArtifactHealth, 0, len(inv.Workloads))
 	for _, w := range inv.Workloads {
@@ -246,6 +249,22 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 			}
 			arts = append(arts, backup.FromArtifact(w, ev.Useful && usefulDump, ev.SizeBytes, ev.Message, key))
 			continue
+		}
+		if name := moverOverride(pol, w, "backup"); name != "" {
+			m, cap, err := reg.Select(ctx, w, name)
+			if err != nil {
+				arts = append(arts, backup.FromArtifact(w, false, 0, err.Error(), ""))
+				continue
+			}
+			if m != nil && cap.Backup {
+				art, berr := m.Backup(ctx, w, movers.ClusterHandle{Name: destName(pair)})
+				if berr != nil {
+					arts = append(arts, backup.FromArtifact(w, false, 0, berr.Error(), ""))
+					continue
+				}
+				arts = append(arts, backup.FromArtifact(w, art.Useful, art.SizeBytes, art.Message, art.ID))
+				continue
+			}
 		}
 		_, _ = snaps.CreateForWorkload(ctx, w, "", r.now())
 		ready, snapName, _ := snaps.LatestReady(ctx, w)
@@ -319,6 +338,7 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 	for _, a := range pol.Status.Artifacts {
 		artByKey[a.Workload] = a
 	}
+	reg := r.registry(ctx, pair, ep)
 	snaps := snapshots.Client{Dynamic: ep.Dest.Dynamic}
 	opt := rehydrateOpts(pol, pair)
 	if act.Status.Phase == portagev1alpha1.ActionPhaseRehydrating || act.Status.Phase == portagev1alpha1.ActionPhaseApplying || act.Status.Phase == "" || act.Status.Phase == portagev1alpha1.ActionPhasePreflight {
@@ -367,6 +387,31 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 				}
 			}
 			continue
+		}
+		if name := moverOverride(pol, w, "restore"); name != "" {
+			m, cap, err := reg.Select(ctx, w, name)
+			if err != nil {
+				facts.Rehydrated[w.Key()] = false
+				facts.UsefulMessage[w.Key()] = err.Error()
+				continue
+			}
+			if m != nil && cap.Restore {
+				a := artByKey[w.Key()]
+				rerr := m.Restore(ctx, w, movers.Artifact{ID: a.ArtifactID, Mover: name, SizeBytes: a.SizeBytes, Useful: a.Useful}, movers.ClusterHandle{Name: destName(pair)})
+				if rerr != nil {
+					facts.Rehydrated[w.Key()] = false
+					facts.UsefulMessage[w.Key()] = rerr.Error()
+					continue
+				}
+				facts.Rehydrated[w.Key()] = true
+				r.healWorkloadOn(ctx, ep.Dest.Kube, w, opt.Transform, facts.Healed)
+				ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w)
+				facts.Ready[w.Key()] = ready
+				if ready && ep.Dest.Exec != nil {
+					facts.Probes[w.Key()] = probe.Run(ctx, ep.Dest.Kube, ep.Dest.Exec, w)
+				}
+				continue
+			}
 		}
 		rehydrated := true
 		for _, pvcName := range w.PVCNames {
@@ -418,7 +463,7 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 }
 
 func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
-	reg := r.registry(pair, ep)
+	reg := r.registry(ctx, pair, ep)
 	src, dst := movers.ClusterHandle{Name: "source"}, movers.ClusterHandle{Name: "dest"}
 	if pair != nil {
 		src.Name, src.Address = pair.Spec.Source.Name, pair.Spec.Source.Address
@@ -447,11 +492,7 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 			workloadsStatus = append(workloadsStatus, st)
 			continue
 		}
-		override := ""
-		if pol.Spec.MoverOverrides != nil {
-			override = pol.Spec.MoverOverrides[string(w.Class)]
-		}
-		m, cap, err := reg.Select(ctx, w, override)
+		m, cap, err := reg.Select(ctx, w, moverOverride(pol, w, "replicate"))
 		if err != nil {
 			failed = err.Error()
 			st.Message = failed
@@ -533,7 +574,7 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 		Rollback:  act.Spec.Rollback,
 		Now:       r.now(),
 	}
-	reg := r.registry(pair, ep)
+	reg := r.registry(ctx, pair, ep)
 	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
 	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, DestDynamic: ep.Dest.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
 
@@ -562,11 +603,7 @@ func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.
 			lagZero = false
 		}
 		if act.Status.Phase == portagev1alpha1.ActionPhasePromoting {
-			override := ""
-			if pol.Spec.MoverOverrides != nil {
-				override = pol.Spec.MoverOverrides[string(w.Class)]
-			}
-			m, cap, _ := reg.Select(ctx, w, override)
+			m, cap, _ := reg.Select(ctx, w, moverOverride(pol, w, "replicate"))
 			if m != nil && cap.Replicate {
 				if err := m.Promote(ctx, w, movers.ClusterHandle{Name: "dest"}); err != nil {
 					promoted = false
@@ -677,7 +714,34 @@ func (r *ActionReconciler) loadPair(ctx context.Context, pol *portagev1alpha1.Po
 	return pair, nil
 }
 
-func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep clusters.Pair) *movers.Registry {
+func moverOverride(pol *portagev1alpha1.Policy, w classify.Workload, op string) string {
+	if pol == nil {
+		return ""
+	}
+	if pol.Spec.MoverOverrides != nil {
+		if n := pol.Spec.MoverOverrides[string(w.Class)]; n != "" {
+			return n
+		}
+	}
+	switch op {
+	case "backup":
+		return pol.Spec.Backup.Mover
+	case "restore":
+		return pol.Spec.Restore.Mover
+	case "replicate":
+		return pol.Spec.Replicate.Mover
+	}
+	return ""
+}
+
+func destName(pair *portagev1alpha1.ClusterPair) string {
+	if pair != nil && pair.Spec.Destination.Name != "" {
+		return pair.Spec.Destination.Name
+	}
+	return "dest"
+}
+
+func (r *ActionReconciler) registry(ctx context.Context, pair *portagev1alpha1.ClusterPair, ep clusters.Pair) *movers.Registry {
 	reg := movers.NewRegistry()
 	reg.Register(pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec})
 	t := transportOf(pair)
@@ -709,7 +773,28 @@ func (r *ActionReconciler) registry(pair *portagev1alpha1.ClusterPair, ep cluste
 		rc.SnapshotClass = snapClass
 		reg.Register(rc)
 	}
+	r.registerPlugins(ctx, reg)
 	return reg
+}
+
+func (r *ActionReconciler) registerPlugins(ctx context.Context, reg *movers.Registry) {
+	if r.Client == nil {
+		return
+	}
+	list := &portagev1alpha1.PluginList{}
+	if err := r.List(ctx, list); err != nil {
+		return
+	}
+	for i := range list.Items {
+		p := list.Items[i]
+		if p.Spec.WebhookURL == "" {
+			continue
+		}
+		if p.Spec.Type != "" && p.Spec.Type != portagev1alpha1.PluginMover {
+			continue
+		}
+		reg.Register(whmover.Mover{Plugin: p})
+	}
 }
 
 func transportOf(pair *portagev1alpha1.ClusterPair) portagev1alpha1.TransportType {

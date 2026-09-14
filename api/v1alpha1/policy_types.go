@@ -82,6 +82,11 @@ type BackupSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	RequireUseful bool `json:"requireUseful,omitempty"`
+
+	// Mover is a Plugin name (or in-tree mover) used for Backup. Empty keeps
+	// the built-in dump + CSI path. Overridden per-class by moverOverrides.
+	// +optional
+	Mover string `json:"mover,omitempty"`
 }
 
 // ReplicateSpec is a live dest replica. While Enabled, Policy keeps one
@@ -95,6 +100,12 @@ type ReplicateSpec struct {
 	// how often the Action is created.
 	// +optional
 	RPO string `json:"rpo,omitempty"`
+
+	// Mover is a Plugin name (or in-tree mover) used for Replicate. Empty uses
+	// discovery order (postgres-streaming, then VolSync). Overridden per-class
+	// by moverOverrides.
+	// +optional
+	Mover string `json:"mover,omitempty"`
 }
 
 // RestoreSpec controls in-place and remote restore.
@@ -108,6 +119,11 @@ type RestoreSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	NeverOverwriteNewer bool `json:"neverOverwriteNewer,omitempty"`
+
+	// Mover is a Plugin name (or in-tree mover) used for Restore. Empty keeps
+	// CSI rehydrate + dump replay. Overridden per-class by moverOverrides.
+	// +optional
+	Mover string `json:"mover,omitempty"`
 }
 
 // CutoverSpec controls planned failover / cloud hop.
@@ -178,7 +194,8 @@ type PolicySpec struct {
 	// +optional
 	ClusterObjects ClusterObjectsSpec `json:"clusterObjects,omitempty"`
 
-	// MoverOverrides pins a mover name per WorkloadClass (e.g. SQLLogical: postgres-streaming).
+	// MoverOverrides pins a mover name per WorkloadClass (e.g. SQLLogical: postgres-streaming,
+	// GenericPVC: velero). Wins over backup.mover / restore.mover / replicate.mover.
 	// +optional
 	MoverOverrides map[string]string `json:"moverOverrides,omitempty"`
 }

@@ -4,3 +4,4 @@ resources:
   - bases/portage.io_clusterpairs.yaml
   - bases/portage.io_policies.yaml
   - bases/portage.io_actions.yaml
+  - bases/portage.io_plugins.yaml

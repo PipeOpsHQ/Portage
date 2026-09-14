@@ -7,6 +7,7 @@ submodule here later), implementing the same contracts as any other consumer:
 | Contract | Where |
 |---|---|
 | `pkg/movers.Mover` | extra engines, storage-native replication |
+| `Plugin` CR (`webhookURL`) | Velero, K8up/restic, any HTTP adapter — hot-swap via Policy.mover |
 | `pkg/render.Renderer` (`Webhook` / `Git`) | dest manifests from desired state, not live clone |
 | `pkg/traffic.Hook` | DNS, ingress, service mesh, platform router |
 | `classify.Register` | extra image/CRD engines |

@@ -1,0 +1,122 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: plugins.portage.io
+spec:
+  group: portage.io
+  names:
+    kind: Plugin
+    listKind: PluginList
+    plural: plugins
+    shortNames:
+    - pplug
+    singular: plugin
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.webhookURL
+      name: URL
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Plugin registers a hot-swappable mover (Velero, restic, …) by webhook URL.
+          Policy.spec.backup.mover / restore.mover / replicate.mover / moverOverrides
+          select it by metadata.name.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PluginSpec registers an out-of-tree backup/restore/replicate engine.
+              The hub POSTs JSON to WebhookURL; swapping this CR (or Policy.mover)
+              hot-swaps Velero, restic/K8up, etc. without rebuilding the operator.
+            properties:
+              backup:
+                description: Backup is true if the plugin implements Backup.
+                type: boolean
+              classes:
+                description: Classes this mover may be selected for. Empty means every
+                  class.
+                items:
+                  description: WorkloadClass is how Portage treats a discovered workload.
+                  enum:
+                  - Stateless
+                  - GenericPVC
+                  - SQLLogical
+                  - KVLogical
+                  - SearchFS
+                  - QueueDurable
+                  - ObjectStore
+                  - OperatorManaged
+                  - UnknownStateful
+                  - ClusterObjects
+                  type: string
+                type: array
+              replicate:
+                description: Replicate is true if the plugin implements Replicate.
+                type: boolean
+              restore:
+                description: Restore is true if the plugin implements Restore.
+                type: boolean
+              timeoutSeconds:
+                description: TimeoutSeconds for one webhook call. Default 120.
+                format: int32
+                type: integer
+              type:
+                default: Mover
+                description: Type is Mover (the only type today).
+                enum:
+                - Mover
+                type: string
+              webhookURL:
+                description: WebhookURL is the plugin HTTP endpoint. One URL handles
+                  all operations.
+                type: string
+            required:
+            - webhookURL
+            type: object
+          status:
+            description: PluginStatus is observed plugin health.
+            properties:
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              ready:
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

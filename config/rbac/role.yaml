@@ -108,6 +108,14 @@ rules:
 - apiGroups:
   - portage.io
   resources:
+  - plugins
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - portage.io
+  resources:
   - policies/finalizers
   verbs:
   - update

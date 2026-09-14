@@ -63,6 +63,11 @@ spec:
                   enabled:
                     default: true
                     type: boolean
+                  mover:
+                    description: |-
+                      Mover is a Plugin name (or in-tree mover) used for Backup. Empty keeps
+                      the built-in dump + CSI path. Overridden per-class by moverOverrides.
+                    type: string
                   requireUseful:
                     default: true
                     description: |-
@@ -121,8 +126,9 @@ spec:
               moverOverrides:
                 additionalProperties:
                   type: string
-                description: 'MoverOverrides pins a mover name per WorkloadClass (e.g.
-                  SQLLogical: postgres-streaming).'
+                description: |-
+                  MoverOverrides pins a mover name per WorkloadClass (e.g. SQLLogical: postgres-streaming,
+                  GenericPVC: velero). Wins over backup.mover / restore.mover / replicate.mover.
                 type: object
               renderer:
                 description: RendererSpec chooses dest manifest production.
@@ -159,6 +165,12 @@ spec:
                 properties:
                   enabled:
                     type: boolean
+                  mover:
+                    description: |-
+                      Mover is a Plugin name (or in-tree mover) used for Replicate. Empty uses
+                      discovery order (postgres-streaming, then VolSync). Overridden per-class
+                      by moverOverrides.
+                    type: string
                   rpo:
                     description: |-
                       RPO is the target lag, e.g. "15m". Poll stays frequent; this is lag, not
@@ -173,6 +185,11 @@ spec:
                       Auto starts a Restore Action when a covered PVC/namespace is empty and
                       a useful artifact exists. Default false — production must opt in.
                     type: boolean
+                  mover:
+                    description: |-
+                      Mover is a Plugin name (or in-tree mover) used for Restore. Empty keeps
+                      CSI rehydrate + dump replay. Overridden per-class by moverOverrides.
+                    type: string
                   neverOverwriteNewer:
                     default: true
                     description: NeverOverwriteNewer refuses restore if live data

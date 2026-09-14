@@ -57,11 +57,12 @@ usefulness-gated backup, kind product e2e. Canonical docs:
 
 ## CRDs
 
-Three kinds, on purpose:
+Four kinds:
 
 - **`ClusterPair`** — two clusters (kubeconfig, Azure AD, AWS IAM, or GCP), transport (`Direct` \| `ObjectStore`), StorageClass maps
-- **`Policy`** — what to back up, replicate, auto-restore, how to render dest manifests
+- **`Policy`** — what to back up, replicate, auto-restore, how to render dest manifests, which mover
 - **`Action`** — one run (`Backup` \| `Restore` \| `Replicate` \| `Cutover`)
+- **`Plugin`** — hot-swap Velero / restic / custom backup-restore webhook
 
 ## Quick start (classifier)
 
@@ -113,7 +114,7 @@ PipeOps, and they are how PipeOps itself integrates.
 
 | Interface | Package | In-tree |
 |---|---|---|
-| Data path | `pkg/movers.Mover` | VolSync (rclone / rsyncTLS), CSI snapshots, `pg_dump` / engine dumps, postgres-streaming |
+| Data path | `pkg/movers.Mover` | VolSync, CSI dumps, postgres-streaming, **Plugin webhook** (Velero, restic, …) |
 | Dest manifests | `pkg/render.Renderer` | `Sanitize`, `Git`, HTTP `Webhook` |
 | Traffic switch | `pkg/traffic.Hook` | `Noop`, HTTP `Webhook` |
 

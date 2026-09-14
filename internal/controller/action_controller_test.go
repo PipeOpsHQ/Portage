@@ -35,6 +35,7 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
+	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
 )
 
@@ -259,6 +260,27 @@ func getAction(t *testing.T, r *ActionReconciler, key types.NamespacedName) *por
 		t.Fatal(err)
 	}
 	return got
+}
+
+func TestMoverOverridePrefersClassThenOp(t *testing.T) {
+	t.Parallel()
+	w := classify.Workload{Class: portagev1alpha1.ClassGenericPVC}
+	pol := &portagev1alpha1.Policy{Spec: portagev1alpha1.PolicySpec{
+		Backup:         portagev1alpha1.BackupSpec{Mover: "velero"},
+		Restore:        portagev1alpha1.RestoreSpec{Mover: "restic"},
+		Replicate:      portagev1alpha1.ReplicateSpec{Mover: "volsync"},
+		MoverOverrides: map[string]string{string(portagev1alpha1.ClassSQLLogical): "postgres-streaming"},
+	}}
+	if got := moverOverride(pol, w, "backup"); got != "velero" {
+		t.Fatalf("backup=%s", got)
+	}
+	if got := moverOverride(pol, w, "restore"); got != "restic" {
+		t.Fatalf("restore=%s", got)
+	}
+	sql := classify.Workload{Class: portagev1alpha1.ClassSQLLogical}
+	if got := moverOverride(pol, sql, "backup"); got != "postgres-streaming" {
+		t.Fatalf("class override=%s", got)
+	}
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {

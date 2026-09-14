@@ -27,11 +27,12 @@ an etcd dump.
 ## Design constraints
 
 1. **Hub orchestrator, plugin movers.** In-tree movers wrap VolSync, CSI
-   snapshots, K8up/restic dumps, postgres streaming, etc.
+   snapshots, dumps, postgres streaming. Out-of-tree engines (Velero, restic)
+   register as a `Plugin` webhook and are selected with `Policy.*.mover`.
 2. **Desired dest shape is rendered, not cloned.** Default renderer is
    `Sanitize` (strip cluster-local fields). PipeOps implements `Webhook`
    from its desired-state control plane; other platforms can too.
-3. **Three CRDs:** `ClusterPair`, `Policy`, `Action`.
+3. **Four CRDs:** `ClusterPair`, `Policy`, `Action`, `Plugin`.
 4. **Completion gate:** `pkg/actionphase.CanSucceed` — stateful workloads
    require `Ready && ProbeOK`.
 5. **PipeOps-stewarded, platform-pluggable.** Module
@@ -81,6 +82,10 @@ Status: classified `inventory`, artifact usefulness, phase.
 
 One run: `Backup | Restore | Replicate | Cutover`.
 
+### Plugin (cluster-scoped)
+
+Webhook mover (Velero, restic, …). Policy `*.mover` selects it by name.
+
 Phases include Preflight, Quiescing, Rehydrating, WaitingReady, Healing,
 Attesting. **Succeeded is illegal without probes.**
 
@@ -98,7 +103,8 @@ Noop | Webhook | out-of-tree
 ```
 
 Register movers in the hub. First capable mover for a class wins, unless
-`Policy.spec.moverOverrides` pins one.
+`Policy.spec.moverOverrides` or `backup.mover` / `restore.mover` /
+`replicate.mover` pins a Plugin or in-tree name. See [Plugins](plugins.md).
 
 ## Classifier
 

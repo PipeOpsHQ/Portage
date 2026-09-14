@@ -37,9 +37,11 @@ replayed rows, PVC dest bytes, cutover freeze).
 - `config/samples/portage_v1alpha1_clusterpair.yaml`
 - `config/samples/portage_v1alpha1_policy.yaml`
 - `config/samples/portage_v1alpha1_action.yaml`
+- `config/samples/portage_v1alpha1_plugin.yaml`
 
 ## Next
 
+- [Plugins](plugins.md)
 - [Cluster auth](cluster-auth.md)
 - [CLI](cli.md)
 - [E2e](e2e.md)

@@ -28,11 +28,12 @@ Use Velero for cluster-state (etcd-style) backup. Use Portage to move
 applications — and, with `clusterObjects`, to live-sync the API graph with
 the same dest-Get completion gate.
 
-## Three CRDs
+## Four CRDs
 
 - **ClusterPair** — source + dest auth (kubeconfig, Azure AD, AWS IAM, GCP), Direct or ObjectStore transport
-- **Policy** — backup / replicate / auto-restore / renderer / clusterObjects / traffic hook
+- **Policy** — backup / replicate / auto-restore / renderer / clusterObjects / traffic hook / **mover**
 - **Action** — one `Backup` \| `Restore` \| `Replicate` \| `Cutover`
+- **Plugin** — hot-swap Velero / restic / custom backup-restore webhook
 
 ## Go module
 
@@ -48,6 +49,7 @@ go get github.com/PipeOpsHQ/portage@v0.1.0
 - [Concepts](concepts.md)
 - [Cluster auth](cluster-auth.md)
 - [CRDs](crds.md)
+- [Plugins](plugins.md)
 - [Backup & restore](backup-restore.md)
 - [E2e](e2e.md)
 - [Architecture](architecture.md)

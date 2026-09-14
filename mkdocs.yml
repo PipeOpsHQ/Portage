@@ -63,6 +63,7 @@ nav:
   - Concepts: concepts.md
   - Cluster auth: cluster-auth.md
   - CRDs: crds.md
+  - Plugins: plugins.md
   - Backup & restore: backup-restore.md
   - Replication & cutover: cutover.md
   - Configuration: configuration.md

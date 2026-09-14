@@ -70,7 +70,7 @@ That is the Velero trap Portage exists to close.
 
 | Interface | In-tree |
 |---|---|
-| `pkg/movers.Mover` | VolSync, rclone transport, postgres-streaming |
+| `pkg/movers.Mover` | VolSync, rclone, postgres-streaming, **Plugin webhook** (Velero, restic, …) |
 | `pkg/render.Renderer` | Sanitize, Git, HTTP Webhook (output still sanitized) |
 | `pkg/traffic.Hook` | Noop, HTTP webhook |
 | `pkg/objectstore.Store` | Memory, Dir, SigV4 S3 |

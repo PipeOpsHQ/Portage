@@ -69,7 +69,11 @@ STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 | GenericPVC | volume-mounted / HTTP |
 | ClusterObjects | dest Get (CRD Established) |
 
+Swap the engine with a [Plugin](plugins.md) (`backup.mover: velero`) — Portage
+still gates `Succeeded` on Ready + probe.
+
 ## Next
 
+- [Plugins](plugins.md)
 - [Replication & cutover](cutover.md)
 - [Configuration](configuration.md)

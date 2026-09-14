@@ -1,0 +1,13 @@
+# Hot-swap backup/restore engine. Point webhookURL at a Velero, restic/K8up,
+# or custom adapter. Policy.spec.backup.mover / restore.mover selects it by name.
+apiVersion: portage.io/v1alpha1
+kind: Plugin
+metadata:
+  name: velero
+spec:
+  type: Mover
+  webhookURL: http://portage-velero.portage-system.svc:8080
+  classes: [GenericPVC, UnknownStateful]
+  backup: true
+  restore: true
+  timeoutSeconds: 300

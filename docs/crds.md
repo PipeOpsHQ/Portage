@@ -45,6 +45,26 @@ Each `ClusterRef` uses **exactly one** auth method (or none = in-cluster):
 Do not set two methods on the same ref. Full YAML, IAM, and private-endpoint
 notes: [Cluster auth](cluster-auth.md).
 
+## Plugin (cluster-scoped)
+
+Hot-swappable mover. The hub POSTs Backup/Restore/Replicate JSON to
+`webhookURL`. Select it with `Policy.spec.backup.mover` (the Plugin name).
+
+```yaml
+apiVersion: portage.io/v1alpha1
+kind: Plugin
+metadata:
+  name: velero
+spec:
+  type: Mover
+  webhookURL: http://portage-velero.portage-system.svc:8080
+  classes: [GenericPVC, UnknownStateful]
+  backup: true
+  restore: true
+```
+
+See [Plugins](plugins.md).
+
 ## Policy (namespaced)
 
 Desired continuity for a selector.
@@ -63,12 +83,15 @@ spec:
     enabled: true
     rpo: 24h
     requireUseful: true
+    mover: velero            # Plugin name; empty = dump + CSI
   replicate:
     enabled: true
     rpo: 15m
+    mover: volsync           # or a Plugin
   restore:
     auto: false
     neverOverwriteNewer: true
+    mover: velero
   renderer:
     kind: Sanitize   # Sanitize | Git | Webhook
   clusterObjects:
