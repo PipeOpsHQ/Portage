@@ -14,8 +14,9 @@ Edit Markdown under `docs/` and `mkdocs.yml`. CI builds with
 Pages via `deploy-pages@v4`.
 
 Pages source must be **GitHub Actions**. If Settings → Pages is “Deploy from
-a branch” (`main` `/docs`), Jekyll overrides the MkDocs site. The docs
-workflow runs `configure-pages` so Actions stays the source.
+a branch” (`main` `/docs`), Jekyll overrides the MkDocs site (generator
+Jekyll v3, no Material theme). The docs workflow PUTs `build_type=workflow`
+and fails if Pages is still legacy.
 
 Do not import PipeOps control-plane packages into `pkg/` or `api/`. Adapters
 implement Mover / Renderer / TrafficHook.

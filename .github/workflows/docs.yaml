@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 # Canonical site is MkDocs Material via deploy-pages@v4.
-# Repo Settings → Pages must be "GitHub Actions". A branch source of
-# main /docs is Jekyll and overrides this workflow (install.html 200,
-# generator Jekyll v3, no Material theme). configure-pages flips that.
+# Settings → Pages → Source must be "GitHub Actions". Deploy from a
+# branch (main /docs) is Jekyll and overrides Material. configure-pages
+# does not switch an already-enabled legacy site; we PUT build_type.
 permissions:
   contents: read
   pages: write
@@ -23,7 +23,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Force Pages source to GitHub Actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/pages" -f build_type=workflow >/dev/null || true
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .build_type)
+          echo "pages build_type=${type}"
+          if [ "$type" != "workflow" ]; then
+            echo "::error::GitHub Pages is ${type} (Jekyll /docs). Set Settings → Pages → Source to GitHub Actions so MkDocs can deploy."
+            exit 1
+          fi
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
