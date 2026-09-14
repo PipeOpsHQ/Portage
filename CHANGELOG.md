@@ -13,6 +13,9 @@
 - Kind e2e installs VolumeSnapshot CRDs (VolSync requires them even for Direct),
   copies restic secrets to dest, and serves MinIO on the src kind node IP
 - `ClusterRef` azure / aws / gcp auth (Entra ID, IAM, ADC) in addition to kubeconfig
+- `Plugin` CR + `Policy.spec.backup/restore/replicate.mover` to hot-swap
+  Velero, restic, or any webhook mover without rebuilding the hub
+- Kind e2e pulls MinIO from `quay.io/minio` (Docker Hub `minio/minio` is gone)
 
 ## [0.1.0] - 2026-08-25
 

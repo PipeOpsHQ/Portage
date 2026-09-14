@@ -22,7 +22,8 @@ make e2e
 
 CI: `.github/workflows/e2e.yaml` (40 minute timeout). Snapshot CRDs + Helm VolSync.
 MinIO shares the source kind node's netns (`SRC_IP:9000`) so mover pods on both
-clusters can reach it. `ClusterPair.spec.source.address` is dest→source WAL
+clusters can reach it. Images come from `quay.io/minio/minio` (Docker Hub no
+longer serves `minio/minio`). `ClusterPair.spec.source.address` is dest→source WAL
 (NodePort on the src kind node).
 
 ## Next

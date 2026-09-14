@@ -92,7 +92,7 @@ var Catalog = []Engine{
 		CRDMatchers:   []string{"kafka.strimzi.io/Kafka"},
 	},
 	{Name: "minio", Class: portagev1alpha1.ClassObjectStore, LogicalDump: false,
-		ImageMatchers: []string{"bitnami/minio", "minio/minio", "minio"}},
+		ImageMatchers: []string{"bitnami/minio", "minio/minio", "quay.io/minio/minio", "minio"}},
 	{Name: "etcd", Class: portagev1alpha1.ClassKVLogical, LogicalDump: true,
 		ImageMatchers: []string{"bitnami/etcd", "quay.io/coreos/etcd", "etcd"}},
 }

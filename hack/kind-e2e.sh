@@ -13,6 +13,10 @@ CTRL_PID=""
 PASSES=0
 MINIO_CID=""
 PG_NODEPORT=30432
+# Docker Hub no longer publishes minio/minio (pull access denied). Quay is
+# the documented image; pin a last community release for CI reproducibility.
+MINIO_IMAGE="${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z}"
+MC_IMAGE="${MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z}"
 
 cleanup() {
   if [[ -n "${CTRL_PID}" ]]; then kill "${CTRL_PID}" 2>/dev/null || true; fi
@@ -148,14 +152,16 @@ fi
 # mover pods reach that address via the kind network (CNI overlay cannot hit
 # a sibling docker container IP; host:9000 hairpins on GHA).
 docker rm -f portage-minio 2>/dev/null || true
+docker pull "$MINIO_IMAGE"
+docker pull "$MC_IMAGE"
 docker run -d --name portage-minio --network "container:${SRC}-control-plane" \
   -e MINIO_ROOT_USER=portage \
   -e MINIO_ROOT_PASSWORD=portageportage \
-  minio/minio server /data
+  "$MINIO_IMAGE" server /data
 MINIO_CID=portage-minio
 mc_ok=0
 for _ in $(seq 1 20); do
-  if docker run --rm --network "container:${SRC}-control-plane" --entrypoint /bin/sh minio/mc -c \
+  if docker run --rm --network "container:${SRC}-control-plane" --entrypoint /bin/sh "$MC_IMAGE" -c \
     "mc alias set m http://127.0.0.1:9000 portage portageportage && mc mb -p m/portage" \
     >/dev/null 2>&1; then
     mc_ok=1
