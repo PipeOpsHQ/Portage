@@ -56,7 +56,8 @@ an etcd dump.
                     CSI snapshots)    sanitized specs)
 ```
 
-The hub holds kubeconfigs for both clusters (`ClusterPair`). It does **not**
+The hub holds cluster auth for both sides (`ClusterPair`): a kubeconfig Secret
+**or** cloud identity (AKS Entra ID, EKS IAM, GKE ADC). It does **not**
 require an in-cluster agent on day one. VolSync/K8up/CSI already run there.
 
 Transport between clouds is usually **ObjectStore** (rclone hop). Direct
@@ -156,7 +157,8 @@ database path.
 All nine original waves plus the closing gap are in-tree **and wired**:
 
 - Dual-cluster `Resolve` is set on Policy and Action reconcilers; dest kubeconfigs
-  are read via client-go (the manager cache does not watch Secrets)
+  are read via client-go (the manager cache does not watch Secrets). Azure/AWS/GCP
+  auth mints refreshable API tokens so the hub does not embed cloud CLIs
 - Object-store dumps (`pg_dump` of the engine DB → Store) that survive a cloud boundary
 - Dest apply uses `Policy.spec.renderer` (`Sanitize` | `Git` | `Webhook`); output is still sanitized
 - Postgres standby ConfigMap on dest; cutover rollback unfreezes source

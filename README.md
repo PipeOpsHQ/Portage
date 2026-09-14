@@ -16,7 +16,8 @@ a class probe attests the data**.
 
 A portage is carrying a vessel between two waterways. That is the job.
 
-Anyone with two kubeconfigs can run it. PipeOps is the steward and the
+Anyone with two clusters can run it (kubeconfig, Azure AD, AWS IAM, or GCP).
+PipeOps is the steward and the
 reference platform (desired-state renderer + traffic switch); other platforms
 plug in the same way.
 
@@ -118,7 +119,7 @@ PipeOps, and they are how PipeOps itself integrates.
 
 PipeOps (and any other control plane that already knows desired state)
 implements `Renderer` as `Webhook` rather than cloning live objects. Sanitize
-is the default so Portage still works on any two kubeconfigs with no extra
+is the default so Portage still works on any two clusters with no extra
 product.
 
 ## Principles

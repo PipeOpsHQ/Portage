@@ -33,6 +33,8 @@ const (
 )
 
 // ClusterRef identifies a Kubernetes cluster the hub can reach.
+// Auth is exactly one of kubeconfigSecret, azure, aws, or gcp.
+// None of those means the cluster this controller runs on.
 type ClusterRef struct {
 	// Name is a stable identifier used in logs and status (not a K8s name).
 	Name string `json:"name"`
@@ -43,15 +45,126 @@ type ClusterRef struct {
 	Address string `json:"address,omitempty"`
 
 	// KubeconfigSecret is a Secret containing a kubeconfig used to
-	// reach this cluster. Empty means "the cluster this controller runs on".
+	// reach this cluster. Prefer azure/aws/gcp so tokens refresh in-process
+	// instead of embedding a static kubeconfig or shipping cloud CLIs.
 	// +optional
 	KubeconfigSecret *SecretKeyRef `json:"kubeconfigSecret,omitempty"`
+
+	// Azure uses Entra ID (DefaultAzureCredential or a service principal)
+	// to reach an AKS API server.
+	// +optional
+	Azure *AzureAuth `json:"azure,omitempty"`
+
+	// AWS uses IAM (IRSA / instance role / keys, optional AssumeRole)
+	// to mint an EKS bearer token.
+	// +optional
+	AWS *AWSAuth `json:"aws,omitempty"`
+
+	// GCP uses ADC or a service-account JSON key to reach a GKE API server.
+	// +optional
+	GCP *GCPAuth `json:"gcp,omitempty"`
 
 	// ObjectStore is an optional bucket prefix used as the rclone hop and
 	// as the default backup artifact location for this cluster.
 	// +optional
 	ObjectStore *ObjectStoreRef `json:"objectStore,omitempty"`
 }
+
+// AzureAuth authenticates to AKS with Entra ID. The hub should run with
+// Azure Workload Identity; CredentialsSecret is only for a service principal.
+type AzureAuth struct {
+	// ResourceID is the AKS ARM id, e.g.
+	// /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ContainerService/managedClusters/{name}
+	ResourceID string `json:"resourceID"`
+
+	// TenantID of the Entra ID tenant. Empty uses AZURE_TENANT_ID / DefaultAzureCredential.
+	// +optional
+	TenantID string `json:"tenantID,omitempty"`
+
+	// ClientID of the hub workload identity or service principal. Empty uses DefaultAzureCredential.
+	// +optional
+	ClientID string `json:"clientID,omitempty"`
+
+	// ServerID is the AKS Entra server application ID.
+	// Defaults to 6dae42f8-4368-4678-94ff-3960e28e3630.
+	// +optional
+	ServerID string `json:"serverID,omitempty"`
+
+	// UsePrivateFQDN connects to the private API server FQDN.
+	// +optional
+	UsePrivateFQDN bool `json:"usePrivateFQDN,omitempty"`
+
+	// CredentialsSecret is a service principal. Keys: tenantID, clientID, clientSecret.
+	// Namespace empty means the hub namespace. Empty secret ⇒ DefaultAzureCredential.
+	// +optional
+	CredentialsSecret *SecretKeyRef `json:"credentialsSecret,omitempty"`
+}
+
+// AWSAuth authenticates to EKS with IAM. The hub should run with IRSA or an
+// instance role; CredentialsSecret is only for static keys.
+type AWSAuth struct {
+	// ClusterName is the EKS cluster name (not ARN).
+	ClusterName string `json:"clusterName"`
+
+	// Region is the EKS region, e.g. us-east-1.
+	Region string `json:"region"`
+
+	// RoleARN is an optional role to AssumeRole before calling EKS/STS.
+	// +optional
+	RoleARN string `json:"roleARN,omitempty"`
+
+	// Endpoint overrides the API server URL from DescribeCluster (private endpoint).
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// CredentialsSecret holds static keys. Keys: accessKey, secretKey, optional sessionToken
+	// (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Empty ⇒ default AWS credential chain.
+	// +optional
+	CredentialsSecret *SecretKeyRef `json:"credentialsSecret,omitempty"`
+}
+
+// GCPAuth authenticates to GKE with Application Default Credentials or a
+// service-account JSON key.
+type GCPAuth struct {
+	// Project is the GCP project id.
+	Project string `json:"project"`
+
+	// Location is the region or zone, e.g. us-central1 or us-central1-a.
+	Location string `json:"location"`
+
+	// Cluster is the GKE cluster name.
+	Cluster string `json:"cluster"`
+
+	// UsePrivateEndpoint talks to the private control-plane IP.
+	// +optional
+	UsePrivateEndpoint bool `json:"usePrivateEndpoint,omitempty"`
+
+	// CredentialsSecret is a GCP service-account JSON key. Key defaults to "key.json".
+	// Empty ⇒ ADC (GKE Workload Identity / GOOGLE_APPLICATION_CREDENTIALS).
+	// +optional
+	CredentialsSecret *SecretKeyRef `json:"credentialsSecret,omitempty"`
+}
+
+// AuthMethods is how many of kubeconfigSecret/azure/aws/gcp are set.
+func (r ClusterRef) AuthMethods() int {
+	n := 0
+	if r.KubeconfigSecret != nil {
+		n++
+	}
+	if r.Azure != nil {
+		n++
+	}
+	if r.AWS != nil {
+		n++
+	}
+	if r.GCP != nil {
+		n++
+	}
+	return n
+}
+
+// HasRemoteAuth is true when the hub must build an out-of-cluster client.
+func (r ClusterRef) HasRemoteAuth() bool { return r.AuthMethods() > 0 }
 
 // ObjectStoreRef points at an S3-compatible bucket.
 type ObjectStoreRef struct {

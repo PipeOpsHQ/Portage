@@ -58,6 +58,17 @@ Controller binary is `/controller` in the image (`cmd/controller`).
 
 Without these, the hub uses an in-process memory store (dev only).
 
+## Cloud identity (recommended)
+
+Give the hub ServiceAccount cloud identity instead of stuffing a kubeconfig
+in a Secret:
+
+- **EKS:** IRSA on the hub; `ClusterRef.aws.clusterName` + `region`
+- **AKS:** Azure Workload Identity; `ClusterRef.azure.resourceID`
+- **GKE:** Workload Identity; `ClusterRef.gcp.project` + `location` + `cluster`
+
+See [Configuration](configuration.md#cluster-auth).
+
 ## Next
 
 Hub is up. Next is how Portage decides what to copy and when a restore is

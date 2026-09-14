@@ -60,18 +60,148 @@ spec:
               cluster.
             properties:
               destination:
-                description: ClusterRef identifies a Kubernetes cluster the hub can
-                  reach.
+                description: |-
+                  ClusterRef identifies a Kubernetes cluster the hub can reach.
+                  Auth is exactly one of kubeconfigSecret, azure, aws, or gcp.
+                  None of those means the cluster this controller runs on.
                 properties:
                   address:
                     description: |-
                       Address is how dest movers reach this cluster, e.g. "192.0.2.10:30432"
                       for Postgres WAL. Empty means in-cluster DNS (same cluster only).
                     type: string
+                  aws:
+                    description: |-
+                      AWS uses IAM (IRSA / instance role / keys, optional AssumeRole)
+                      to mint an EKS bearer token.
+                    properties:
+                      clusterName:
+                        description: ClusterName is the EKS cluster name (not ARN).
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret holds static keys. Keys: accessKey, secretKey, optional sessionToken
+                          (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Empty ⇒ default AWS credential chain.
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpoint:
+                        description: Endpoint overrides the API server URL from DescribeCluster
+                          (private endpoint).
+                        type: string
+                      region:
+                        description: Region is the EKS region, e.g. us-east-1.
+                        type: string
+                      roleARN:
+                        description: RoleARN is an optional role to AssumeRole before
+                          calling EKS/STS.
+                        type: string
+                    required:
+                    - clusterName
+                    - region
+                    type: object
+                  azure:
+                    description: |-
+                      Azure uses Entra ID (DefaultAzureCredential or a service principal)
+                      to reach an AKS API server.
+                    properties:
+                      clientID:
+                        description: ClientID of the hub workload identity or service
+                          principal. Empty uses DefaultAzureCredential.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret is a service principal. Keys: tenantID, clientID, clientSecret.
+                          Namespace empty means the hub namespace. Empty secret ⇒ DefaultAzureCredential.
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      resourceID:
+                        description: |-
+                          ResourceID is the AKS ARM id, e.g.
+                          /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ContainerService/managedClusters/{name}
+                        type: string
+                      serverID:
+                        description: |-
+                          ServerID is the AKS Entra server application ID.
+                          Defaults to 6dae42f8-4368-4678-94ff-3960e28e3630.
+                        type: string
+                      tenantID:
+                        description: TenantID of the Entra ID tenant. Empty uses AZURE_TENANT_ID
+                          / DefaultAzureCredential.
+                        type: string
+                      usePrivateFQDN:
+                        description: UsePrivateFQDN connects to the private API server
+                          FQDN.
+                        type: boolean
+                    required:
+                    - resourceID
+                    type: object
+                  gcp:
+                    description: GCP uses ADC or a service-account JSON key to reach
+                      a GKE API server.
+                    properties:
+                      cluster:
+                        description: Cluster is the GKE cluster name.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret is a GCP service-account JSON key. Key defaults to "key.json".
+                          Empty ⇒ ADC (GKE Workload Identity / GOOGLE_APPLICATION_CREDENTIALS).
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      location:
+                        description: Location is the region or zone, e.g. us-central1
+                          or us-central1-a.
+                        type: string
+                      project:
+                        description: Project is the GCP project id.
+                        type: string
+                      usePrivateEndpoint:
+                        description: UsePrivateEndpoint talks to the private control-plane
+                          IP.
+                        type: boolean
+                    required:
+                    - cluster
+                    - location
+                    - project
+                    type: object
                   kubeconfigSecret:
                     description: |-
                       KubeconfigSecret is a Secret containing a kubeconfig used to
-                      reach this cluster. Empty means "the cluster this controller runs on".
+                      reach this cluster. Prefer azure/aws/gcp so tokens refresh in-process
+                      instead of embedding a static kubeconfig or shipping cloud CLIs.
                     properties:
                       key:
                         description: Key defaults to "kubeconfig".
@@ -123,18 +253,148 @@ spec:
                   clusters.
                 type: object
               source:
-                description: ClusterRef identifies a Kubernetes cluster the hub can
-                  reach.
+                description: |-
+                  ClusterRef identifies a Kubernetes cluster the hub can reach.
+                  Auth is exactly one of kubeconfigSecret, azure, aws, or gcp.
+                  None of those means the cluster this controller runs on.
                 properties:
                   address:
                     description: |-
                       Address is how dest movers reach this cluster, e.g. "192.0.2.10:30432"
                       for Postgres WAL. Empty means in-cluster DNS (same cluster only).
                     type: string
+                  aws:
+                    description: |-
+                      AWS uses IAM (IRSA / instance role / keys, optional AssumeRole)
+                      to mint an EKS bearer token.
+                    properties:
+                      clusterName:
+                        description: ClusterName is the EKS cluster name (not ARN).
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret holds static keys. Keys: accessKey, secretKey, optional sessionToken
+                          (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Empty ⇒ default AWS credential chain.
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpoint:
+                        description: Endpoint overrides the API server URL from DescribeCluster
+                          (private endpoint).
+                        type: string
+                      region:
+                        description: Region is the EKS region, e.g. us-east-1.
+                        type: string
+                      roleARN:
+                        description: RoleARN is an optional role to AssumeRole before
+                          calling EKS/STS.
+                        type: string
+                    required:
+                    - clusterName
+                    - region
+                    type: object
+                  azure:
+                    description: |-
+                      Azure uses Entra ID (DefaultAzureCredential or a service principal)
+                      to reach an AKS API server.
+                    properties:
+                      clientID:
+                        description: ClientID of the hub workload identity or service
+                          principal. Empty uses DefaultAzureCredential.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret is a service principal. Keys: tenantID, clientID, clientSecret.
+                          Namespace empty means the hub namespace. Empty secret ⇒ DefaultAzureCredential.
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      resourceID:
+                        description: |-
+                          ResourceID is the AKS ARM id, e.g.
+                          /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ContainerService/managedClusters/{name}
+                        type: string
+                      serverID:
+                        description: |-
+                          ServerID is the AKS Entra server application ID.
+                          Defaults to 6dae42f8-4368-4678-94ff-3960e28e3630.
+                        type: string
+                      tenantID:
+                        description: TenantID of the Entra ID tenant. Empty uses AZURE_TENANT_ID
+                          / DefaultAzureCredential.
+                        type: string
+                      usePrivateFQDN:
+                        description: UsePrivateFQDN connects to the private API server
+                          FQDN.
+                        type: boolean
+                    required:
+                    - resourceID
+                    type: object
+                  gcp:
+                    description: GCP uses ADC or a service-account JSON key to reach
+                      a GKE API server.
+                    properties:
+                      cluster:
+                        description: Cluster is the GKE cluster name.
+                        type: string
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret is a GCP service-account JSON key. Key defaults to "key.json".
+                          Empty ⇒ ADC (GKE Workload Identity / GOOGLE_APPLICATION_CREDENTIALS).
+                        properties:
+                          key:
+                            description: Key defaults to "kubeconfig".
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Empty means the
+                              hub namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      location:
+                        description: Location is the region or zone, e.g. us-central1
+                          or us-central1-a.
+                        type: string
+                      project:
+                        description: Project is the GCP project id.
+                        type: string
+                      usePrivateEndpoint:
+                        description: UsePrivateEndpoint talks to the private control-plane
+                          IP.
+                        type: boolean
+                    required:
+                    - cluster
+                    - location
+                    - project
+                    type: object
                   kubeconfigSecret:
                     description: |-
                       KubeconfigSecret is a Secret containing a kubeconfig used to
-                      reach this cluster. Empty means "the cluster this controller runs on".
+                      reach this cluster. Prefer azure/aws/gcp so tokens refresh in-process
+                      instead of embedding a static kubeconfig or shipping cloud CLIs.
                     properties:
                       key:
                         description: Key defaults to "kubeconfig".

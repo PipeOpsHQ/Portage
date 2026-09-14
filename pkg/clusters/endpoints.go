@@ -27,7 +27,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
@@ -43,7 +42,7 @@ type Endpoints struct {
 	REST    *rest.Config
 }
 
-// Pair is source + dest. When dest kubeconfig is empty, Dest == Source (in-cluster).
+// Pair is source + dest. When dest has no remote auth, Dest == Source (in-cluster).
 type Pair struct {
 	Source Endpoints
 	Dest   Endpoints
@@ -64,50 +63,38 @@ type Resolver struct {
 	Local     Endpoints
 	HubNS     string
 	NewForCfg func(*rest.Config) (kubernetes.Interface, dynamic.Interface, kubeexec.Interface, error)
+	// Cloud builds a rest.Config for azure/aws/gcp. Nil uses the in-tree SDKs.
+	Cloud func(context.Context, portagev1alpha1.ClusterRef) (*rest.Config, error)
 }
 
-// Resolve returns source and dest endpoints. Empty kubeconfig secret ⇒ local.
+// Resolve returns source and dest endpoints. No remote auth ⇒ local.
 func (r Resolver) Resolve(ctx context.Context, pair *portagev1alpha1.ClusterPair) (Pair, error) {
 	src := r.Local
 	dst := r.Local
 	if pair == nil {
 		return Pair{Source: src, Dest: dst}, nil
 	}
-	src.Name = pair.Spec.Source.Name
-	dst.Name = pair.Spec.Destination.Name
 	var err error
-	if pair.Spec.Source.KubeconfigSecret != nil {
-		src, err = r.fromSecret(ctx, pair.Spec.Source)
-		if err != nil {
-			return Pair{}, fmt.Errorf("source cluster: %w", err)
-		}
+	src, err = r.endpoints(ctx, pair.Spec.Source)
+	if err != nil {
+		return Pair{}, fmt.Errorf("source cluster: %w", err)
 	}
-	if pair.Spec.Destination.KubeconfigSecret != nil {
-		dst, err = r.fromSecret(ctx, pair.Spec.Destination)
-		if err != nil {
-			return Pair{}, fmt.Errorf("destination cluster: %w", err)
-		}
+	dst, err = r.endpoints(ctx, pair.Spec.Destination)
+	if err != nil {
+		return Pair{}, fmt.Errorf("destination cluster: %w", err)
 	}
 	return Pair{Source: src, Dest: dst}, nil
 }
 
-func (r Resolver) fromSecret(ctx context.Context, ref portagev1alpha1.ClusterRef) (Endpoints, error) {
-	ns := ref.KubeconfigSecret.Namespace
-	if ns == "" {
-		ns = r.HubNS
+func (r Resolver) endpoints(ctx context.Context, ref portagev1alpha1.ClusterRef) (Endpoints, error) {
+	if !ref.HasRemoteAuth() {
+		ep := r.Local
+		if ref.Name != "" {
+			ep.Name = ref.Name
+		}
+		return ep, nil
 	}
-	if ns == "" {
-		ns = "portage-system"
-	}
-	keyName := ref.KubeconfigSecret.Key
-	if keyName == "" {
-		keyName = "kubeconfig"
-	}
-	raw, err := r.secretBytes(ctx, ns, ref.KubeconfigSecret.Name, keyName)
-	if err != nil {
-		return Endpoints{}, err
-	}
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(raw)
+	cfg, err := r.restConfig(ctx, ref)
 	if err != nil {
 		return Endpoints{}, err
 	}

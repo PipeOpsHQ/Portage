@@ -28,8 +28,9 @@ useful artifact (≥ 64 KiB dump). Portable copies live in the object store
 
 ## Dual cluster
 
-`ClusterPair` holds two kubeconfigs. Actions resolve **source** vs **dest**
-clients. Empty dest secret means in-cluster (same API).
+`ClusterPair` holds two cluster refs. Actions resolve **source** vs **dest**
+clients via kubeconfig **or** cloud identity (Azure Entra ID, AWS IAM, GCP ADC).
+Empty dest auth means in-cluster (same API).
 
 Transport:
 

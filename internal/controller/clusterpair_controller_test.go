@@ -28,6 +28,7 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 )
 
 func TestClusterPairLocalDestinationReady(t *testing.T) {
@@ -62,5 +63,48 @@ func TestClusterPairLocalDestinationReady(t *testing.T) {
 	}
 	if !got.Status.SourceReachable || !got.Status.DestinationReachable {
 		t.Fatalf("reachability %+v", got.Status)
+	}
+}
+
+func TestClusterPairCloudDestUsesResolver(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	pair := &portagev1alpha1.ClusterPair{
+		ObjectMeta: metav1.ObjectMeta{Name: "pair"},
+		Spec: portagev1alpha1.ClusterPairSpec{
+			Source: portagev1alpha1.ClusterRef{Name: "a"},
+			Destination: portagev1alpha1.ClusterRef{
+				Name: "b",
+				AWS:  &portagev1alpha1.AWSAuth{ClusterName: "prod", Region: "us-east-1"},
+			},
+		},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.ClusterPair{}).
+		WithObjects(pair).Build()
+	dest := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}})
+	r := &ClusterPairReconciler{
+		Client:     c,
+		Scheme:     scheme,
+		KubeClient: k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}),
+		Resolve: func(_ context.Context, p *portagev1alpha1.ClusterPair) (clusters.Pair, error) {
+			if p.Spec.Destination.AWS == nil {
+				t.Fatal("expected aws dest")
+			}
+			return clusters.Pair{
+				Source: clusters.Local("a", k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}), nil, nil, nil),
+				Dest:   clusters.Local("b", dest, nil, nil, nil),
+			}, nil
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "pair"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := &portagev1alpha1.ClusterPair{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pair"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != portagev1alpha1.ClusterPairReady {
+		t.Fatalf("phase=%s %s", got.Status.Phase, got.Status.Message)
 	}
 }

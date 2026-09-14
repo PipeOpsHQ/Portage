@@ -22,6 +22,20 @@ See [Install](install.md) for object-store variables.
 `ClusterPair.spec.source.address` (`host:port`) is how dest Postgres reaches
 source WAL. Empty = in-cluster DNS only.
 
+## Cluster auth
+
+`ClusterPair.spec.source` / `.destination` take **one** of:
+
+| Auth | Hub identity | Notes |
+|---|---|---|
+| *(omit)* | in-cluster | This controller's API |
+| `kubeconfigSecret` | Secret key (default `kubeconfig`) | Tokens in the file expire; prefer cloud auth |
+| `azure` | Workload Identity / `DefaultAzureCredential`, or Secret `tenantID`+`clientID`+`clientSecret` | `resourceID` is the AKS ARM id |
+| `aws` | IRSA / instance role / Secret keys; optional `roleARN` | `clusterName` + `region`; token is `k8s-aws-v1.` |
+| `gcp` | ADC / GKE Workload Identity, or Secret `key.json` | `project`, `location`, `cluster` |
+
+Private API servers: `azure.usePrivateFQDN`, `aws.endpoint`, `gcp.usePrivateEndpoint`.
+
 ## Kind e2e
 
 See [E2e](e2e.md). `make e2e` runs the product checks (usefulness, dest probe,

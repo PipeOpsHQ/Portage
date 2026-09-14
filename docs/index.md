@@ -30,7 +30,7 @@ the same dest-Get completion gate.
 
 ## Three CRDs
 
-- **ClusterPair** — source + dest kubeconfigs, Direct or ObjectStore transport
+- **ClusterPair** — source + dest auth (kubeconfig, Azure AD, AWS IAM, GCP), Direct or ObjectStore transport
 - **Policy** — backup / replicate / auto-restore / renderer / clusterObjects / traffic hook
 - **Action** — one `Backup` \| `Restore` \| `Replicate` \| `Cutover`
 

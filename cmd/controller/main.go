@@ -106,6 +106,7 @@ func main() {
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		KubeClient: kubeClient,
+		Resolve:    resolver.Resolve,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterPair")
 		os.Exit(1)

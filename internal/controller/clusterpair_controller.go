@@ -18,17 +18,16 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 )
 
 // ClusterPairReconciler pings source and dest APIs.
@@ -36,6 +35,7 @@ type ClusterPairReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	KubeClient kubernetes.Interface
+	Resolve    func(context.Context, *portagev1alpha1.ClusterPair) (clusters.Pair, error)
 }
 
 // +kubebuilder:rbac:groups=portage.io,resources=clusterpairs,verbs=get;list;watch;create;update;patch;delete
@@ -47,8 +47,7 @@ func (r *ClusterPairReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.Get(ctx, req.NamespacedName, pair); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	srcOK := r.ping(ctx, r.KubeClient)
-	dstOK, dstMsg := r.pingRef(ctx, pair.Spec.Destination)
+	srcOK, srcMsg, dstOK, dstMsg := r.pingPair(ctx, pair)
 	pair.Status.SourceReachable = srcOK
 	pair.Status.DestinationReachable = dstOK
 	pair.Status.ObservedGeneration = pair.Generation
@@ -58,7 +57,11 @@ func (r *ClusterPairReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		pair.Status.Message = "source and destination reachable"
 	case !srcOK:
 		pair.Status.Phase = portagev1alpha1.ClusterPairFailed
-		pair.Status.Message = "source cluster unreachable"
+		if srcMsg != "" {
+			pair.Status.Message = "source cluster: " + srcMsg
+		} else {
+			pair.Status.Message = "source cluster unreachable"
+		}
 	default:
 		pair.Status.Phase = portagev1alpha1.ClusterPairDegraded
 		pair.Status.Message = dstMsg
@@ -77,44 +80,36 @@ func (r *ClusterPairReconciler) ping(ctx context.Context, kube kubernetes.Interf
 	return err == nil
 }
 
-func (r *ClusterPairReconciler) pingRef(ctx context.Context, ref portagev1alpha1.ClusterRef) (bool, string) {
-	if ref.KubeconfigSecret == nil {
-		if r.ping(ctx, r.KubeClient) {
-			return true, "destination is local cluster"
+func (r *ClusterPairReconciler) pingPair(ctx context.Context, pair *portagev1alpha1.ClusterPair) (srcOK bool, srcMsg string, dstOK bool, dstMsg string) {
+	srcRemote := pair.Spec.Source.HasRemoteAuth()
+	dstRemote := pair.Spec.Destination.HasRemoteAuth()
+	if !srcRemote && !dstRemote {
+		ok := r.ping(ctx, r.KubeClient)
+		msg := ""
+		if !ok {
+			msg = "local cluster unreachable"
 		}
-		return false, "local destination unreachable"
+		return ok, msg, ok, msg
 	}
-	ns := ref.KubeconfigSecret.Namespace
-	if ns == "" {
-		ns = "portage-system"
+	if r.Resolve == nil {
+		return false, "cluster resolver is not configured", false, "cluster resolver is not configured"
 	}
-	if r.KubeClient == nil {
-		return false, "kube client is not configured"
-	}
-	k := ref.KubeconfigSecret.Key
-	if k == "" {
-		k = "kubeconfig"
-	}
-	sec, err := r.KubeClient.CoreV1().Secrets(ns).Get(ctx, ref.KubeconfigSecret.Name, metav1.GetOptions{})
+	ep, err := r.Resolve(ctx, pair)
 	if err != nil {
-		return false, "kubeconfig secret: " + err.Error()
+		if srcRemote {
+			return false, err.Error(), false, ""
+		}
+		return r.ping(ctx, r.KubeClient), "", false, err.Error()
 	}
-	raw, ok := sec.Data[k]
-	if !ok {
-		return false, fmt.Sprintf("secret %s missing key %s", ref.KubeconfigSecret.Name, k)
+	srcOK = r.ping(ctx, ep.Source.Kube)
+	dstOK = r.ping(ctx, ep.Dest.Kube)
+	if !srcOK {
+		srcMsg = "API ping failed"
 	}
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(raw)
-	if err != nil {
-		return false, "kubeconfig parse: " + err.Error()
+	if !dstOK {
+		dstMsg = "destination API ping failed"
 	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return false, err.Error()
-	}
-	if !r.ping(ctx, cs) {
-		return false, "destination API ping failed"
-	}
-	return true, ""
+	return srcOK, srcMsg, dstOK, dstMsg
 }
 
 func (r *ClusterPairReconciler) SetupWithManager(mgr ctrl.Manager) error {

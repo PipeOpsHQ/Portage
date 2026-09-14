@@ -16,17 +16,33 @@ spec:
   source:
     name: aws
     address: 192.0.2.10:30432   # dest WAL / NodePort; empty = in-cluster DNS
+    aws:
+      clusterName: prod
+      region: us-east-1
   destination:
     name: gcp
-    kubeconfigSecret:
-      name: gcp-kubeconfig
-      key: kubeconfig
+    gcp:
+      project: my-project
+      location: us-central1
+      cluster: dr
     objectStore:
       url: s3://portage-dumps/gcp
   transport: ObjectStore
   storageClassMap:
     gp3: standard-csi
 ```
+
+Each `ClusterRef` uses **exactly one** auth method (or none = in-cluster):
+
+| Field | Identity |
+|---|---|
+| *(empty)* | Hub cluster (in-cluster config) |
+| `kubeconfigSecret` | Static kubeconfig in a Secret |
+| `azure` | Entra ID → AKS (`DefaultAzureCredential` or SP secret) |
+| `aws` | IAM → EKS token (`IRSA` / instance role / keys, optional `roleARN`) |
+| `gcp` | ADC / Workload Identity / `key.json` → GKE |
+
+Do not set two methods on the same ref. Cloud auth refreshes tokens in-process so the hub image does not ship `aws`, `kubelogin`, or `gcloud`.
 
 ## Policy (namespaced)
 

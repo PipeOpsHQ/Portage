@@ -12,6 +12,7 @@
   `ClusterRef.address` for dest→source Postgres WAL; e2e asserts dest PVC bytes
 - Kind e2e installs VolumeSnapshot CRDs (VolSync requires them even for Direct),
   copies restic secrets to dest, and serves MinIO on the src kind node IP
+- `ClusterRef` azure / aws / gcp auth (Entra ID, IAM, ADC) in addition to kubeconfig
 
 ## [0.1.0] - 2026-08-25
 

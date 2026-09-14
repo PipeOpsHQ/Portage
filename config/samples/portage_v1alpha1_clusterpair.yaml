@@ -5,14 +5,23 @@ metadata:
 spec:
   source:
     name: cloud-a
-    # kubeconfigSecret:
-    #   name: cloud-a-kubeconfig
-    #   key: kubeconfig
+    # Empty auth = the cluster this controller runs on.
+    # aws:
+    #   clusterName: prod
+    #   region: us-east-1
+    #   roleARN: arn:aws:iam::123456789012:role/portage-eks
   destination:
     name: cloud-b
+    # One of kubeconfigSecret, azure, aws, gcp.
     kubeconfigSecret:
       name: cloud-b-kubeconfig
       key: kubeconfig
+    # azure:
+    #   resourceID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.ContainerService/managedClusters/prod
+    # gcp:
+    #   project: my-project
+    #   location: us-central1
+    #   cluster: prod
   transport: ObjectStore
   storageClassMap:
     gp3: standard-csi
