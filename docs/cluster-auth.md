@@ -31,6 +31,37 @@ destination:
     namespace: portage-system  # default: hub namespace
 ```
 
+```bash
+kubectl -n portage-system create secret generic dest-kubeconfig \
+  --from-file=kubeconfig=$HOME/.kube/config
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dest-kubeconfig
+  namespace: portage-system
+type: Opaque
+stringData:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        certificate-authority-data: LS0tLS1CRUdJTi...
+        server: https://10.0.0.10:6443
+      name: dest
+    contexts:
+    - context: { cluster: dest, user: dest }
+      name: dest
+    current-context: dest
+    users:
+    - name: dest
+      user:
+        token: eyJhbGciOiJSUzI1NiIs...   # static token; it will expire
+```
+
 Tokens inside a kubeconfig expire. An exec-plugin kubeconfig (`aws eks get-token`,
 `kubelogin`, `gke-gcloud-auth-plugin`) also fails unless those binaries exist
 in the hub pod — they do not. Use `azure` / `aws` / `gcp` instead.
@@ -52,6 +83,26 @@ destination:
 Default credential chain: IRSA, instance role, then env. Optional Secret keys:
 `accessKey` / `AWS_ACCESS_KEY_ID`, `secretKey` / `AWS_SECRET_ACCESS_KEY`,
 `sessionToken` / `AWS_SESSION_TOKEN`, `roleARN` / `AWS_ROLE_ARN`.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-keys
+  namespace: portage-system
+type: Opaque
+stringData:
+  accessKey: AKIA...
+  secretKey: wJalr...
+  # sessionToken: FwoGZXIvYXdzE...   # optional STS session
+  # roleARN: arn:aws:iam::123456789012:role/portage-eks
+```
+
+```bash
+kubectl -n portage-system create secret generic aws-keys \
+  --from-literal=accessKey="$AWS_ACCESS_KEY_ID" \
+  --from-literal=secretKey="$AWS_SECRET_ACCESS_KEY"
+```
 
 IAM on the hub identity (or `roleARN`):
 
@@ -78,7 +129,28 @@ destination:
 
 `DefaultAzureCredential` covers Azure Workload Identity, managed identity, and
 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / federated token. Optional Secret keys:
-`tenantID`, `clientID`, `clientSecret`.
+`tenantID`, `clientID`, `clientSecret` (or `AZURE_TENANT_ID` /
+`AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`).
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-sp
+  namespace: portage-system
+type: Opaque
+stringData:
+  tenantID: 00000000-0000-0000-0000-000000000000
+  clientID: 11111111-1111-1111-1111-111111111111
+  clientSecret: super-secret-app-password
+```
+
+```bash
+kubectl -n portage-system create secret generic azure-sp \
+  --from-literal=tenantID="$AZURE_TENANT_ID" \
+  --from-literal=clientID="$AZURE_CLIENT_ID" \
+  --from-literal=clientSecret="$AZURE_CLIENT_SECRET"
+```
 
 Azure RBAC on the hub identity:
 
@@ -108,6 +180,32 @@ destination:
 Default: Application Default Credentials (GKE Workload Identity on the hub,
 or `GOOGLE_APPLICATION_CREDENTIALS`). Optional Secret: service-account JSON
 at `key.json` or `credentials.json`.
+
+```bash
+kubectl -n portage-system create secret generic gcp-sa \
+  --from-file=key.json=./sa.json
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gcp-sa
+  namespace: portage-system
+type: Opaque
+stringData:
+  key.json: |
+    {
+      "type": "service_account",
+      "project_id": "my-project",
+      "private_key_id": "...",
+      "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+      "client_email": "portage@my-project.iam.gserviceaccount.com",
+      "client_id": "1234567890",
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token"
+    }
+```
 
 GCP IAM on the hub identity:
 
