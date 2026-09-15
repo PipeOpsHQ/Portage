@@ -61,8 +61,9 @@ The hub holds cluster auth for both sides (`ClusterPair`): a kubeconfig Secret
 **or** cloud identity (AKS Entra ID, EKS IAM, GKE ADC). It does **not**
 require an in-cluster agent on day one. VolSync/K8up/CSI already run there.
 
-Transport between clouds is usually **ObjectStore** (rclone hop). Direct
-rsync-TLS is optional when clusters can peer.
+Transport between clouds is usually **ObjectStore** (VolSync restic,
+incremental). rclone is a Policy override. Direct rsync-TLS is optional when
+clusters can peer.
 
 ## CRDs
 
@@ -109,15 +110,25 @@ Register movers in the hub. First capable mover for a class wins, unless
 ## Classifier
 
 `pkg/classify.Walk` lists STS / Deploy / DaemonSet / leftover PVCs.
+VolSync cache and clone volumes are **not** leftover user data:
+
+- label `app.kubernetes.io/created-by=volsync`
+- ownerRef `ReplicationSource` / `ReplicationDestination`
+- name prefix `volsync-src-` or `volsync-dst-`
+
+Replicating those nests ReplicationSources (cache-of-cache), contends for the
+restic lock and RWO cache PVC, and the user volume never reaches
+`lastSyncTime`.
 
 | Signal | Class |
 |---|---|
 | Engine image or CRD catalog hit | SQLLogical, KVLogical, SearchFS, QueueDurable, ObjectStore |
 | PVC, unknown image | GenericPVC |
 | PVC, no owner | UnknownStateful (alert, still backup) |
+| VolSync cache / clone PVC | skipped (not a workload) |
 | No PVC, unknown image | Stateless |
 
-Unknown is **opt-out**, never opt-in.
+Unknown is **opt-out**, never opt-in. Mover scratch is the exception.
 
 ## Transform
 

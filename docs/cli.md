@@ -7,7 +7,7 @@ portage --help
 
 | Command | Purpose |
 |---|---|
-| `portage inventory -n <ns>` | Classify workloads (`table` or `-o json`) |
+| `portage inventory -n <ns>` | Classify workloads (`table` or `-o json`). Skips VolSync cache PVCs. |
 | `portage inventory -A` | All namespaces |
 | `portage version` | Build metadata |
 | `portage completion bash\|zsh\|fish\|powershell` | Shell completion |

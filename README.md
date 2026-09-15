@@ -95,8 +95,9 @@ controller execs the class probe (`pg_isready`, `PING`, …) and will sit in
 Healers strip zone pins and remap StorageClass; missing PVCs are recreated
 **by original name** from a CSI VolumeSnapshot (`dataSource`).
 
-`ClusterPair` + VolSync (rsyncTLS or rclone object-store hop) keep a warm
-replica. `Action` `type: Cutover` freezes the source, waits lag=0, promotes
+`ClusterPair` + VolSync (restic ObjectStore, or rsyncTLS Direct; rclone is an
+override) keep a warm replica. VolSync cache PVCs are not classified.
+`Action` `type: Cutover` freezes the source, waits lag=0, promotes
 (Postgres `pg_promote` when that mover applies), fires the traffic webhook,
 then attests. `Policy.spec.restore.auto` creates a Restore Action only when
 backups are useful and a PVC is gone.

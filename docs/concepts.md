@@ -3,12 +3,16 @@
 ## Classify first
 
 Portage walks StatefulSets, Deployments, DaemonSets, and leftover PVCs.
+VolSync restic cache/clone PVCs (`volsync-src-*`, `volsync-dst-*`, or
+`app.kubernetes.io/created-by=volsync`) are skipped — they are mover
+scratch, not user state.
 
 | Signal | Class |
 |---|---|
 | Engine image / CRD catalog | SQLLogical, KVLogical, SearchFS, QueueDurable, ObjectStore |
 | PVC, unknown image | GenericPVC |
 | PVC, no owner | UnknownStateful (still backed up) |
+| VolSync cache / clone PVC | skipped |
 | No PVC | Stateless (re-render only) |
 | `spec.clusterObjects.enabled` | ClusterObjects (API graph: CM/Secret/Service/RBAC/unknown CRs) |
 
@@ -34,7 +38,7 @@ Empty dest auth means in-cluster (same API).
 
 Transport:
 
-- `ObjectStore` (default) — dumps + VolSync rclone hop
+- `ObjectStore` (default) — dumps + VolSync **restic** (incremental). rclone is `moverOverrides.GenericPVC: rclone`
 - `Direct` — VolSync rsyncTLS (clusters must peer)
 
 ## Cluster objects are not etcd

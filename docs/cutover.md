@@ -11,6 +11,9 @@
   `copyMethod: Direct` unless `ClusterPair.spec.snapshotClassMap` is set
   (CSI Snapshot). Override `Policy.spec.moverOverrides.GenericPVC: rclone`
   for the old rclone hop. Direct transport → rsyncTLS (`portage-rsync-tls` PSK).
+  The classifier does **not** inventory VolSync cache PVCs
+  (`volsync-src-*-cache`, `volsync-dst-*-cache`). Treating them as workloads
+  creates nested ReplicationSources and the user PVC never syncs.
 
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`

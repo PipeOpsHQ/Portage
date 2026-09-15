@@ -22,6 +22,11 @@
 - Classifier skips VolSync cache/clone PVCs so restic does not nest
   ReplicationSources (cache-of-cache) and starve the user PVC sync
 
+### Docs
+
+- Classifier, cutover, CLI, and e2e pages document the VolSync cache skip
+  and that ObjectStore defaults to restic (rclone is an override)
+
 ## [0.1.0] - 2026-08-25
 
 ### Added
