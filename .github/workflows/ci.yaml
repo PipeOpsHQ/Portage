@@ -19,3 +19,5 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build -o /tmp/portage ./cmd/portage && go build -o /tmp/controller ./cmd/controller
+      - name: Next-version
+        run: bash hack/next-version_test.sh

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.2.0] - 2026-09-15
+
 ### Added
 
 - `Policy.spec.clusterObjects`: live API-graph backup / replicate / restore
@@ -26,6 +28,8 @@
 
 - Classifier, cutover, CLI, and e2e pages document the VolSync cache skip
   and that ObjectStore defaults to restic (rclone is an override)
+- Push to `main` with `feat`/`fix` since the last tag cuts a GitHub Release
+  (GoReleaser + `ghcr.io/pipeopshq/portage:<tag>`). `docs:`/`chore:`/`ci:` do not.
 
 ## [0.1.0] - 2026-08-25
 

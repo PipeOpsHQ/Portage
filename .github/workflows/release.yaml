@@ -1,15 +1,77 @@
 name: release
 
+# Manual: git push origin vX.Y.Z
+# Auto: push to main with feat/fix/e2e since the last v* tag → tag + GitHub
+# Release + GHCR. docs/chore/ci/test only does not cut a release.
+# Tagging with GITHUB_TOKEN does not retrigger this workflow, so the same
+# run both creates the tag and publishes.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
   packages: write
 
 jobs:
+  decide:
+    if: github.repository == 'PipeOpsHQ/Portage'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      skip: ${{ steps.ver.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ver
+        name: Next version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "manual tag ${GITHUB_REF_NAME}"
+            exit 0
+          fi
+          set +e
+          tag=$(bash hack/next-version.sh)
+          code=$?
+          set -e
+          if [[ "$code" -eq 2 ]]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "no releasable commits since last tag"
+            exit 0
+          fi
+          if [[ "$code" -ne 0 || -z "$tag" ]]; then
+            echo "next-version failed code=$code tag=$tag" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "auto tag ${tag}"
+
+  test:
+    needs: decide
+    if: needs.decide.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: go test -race -count=1 ./...
+      - run: bash hack/next-version_test.sh
+
   goreleaser:
+    needs: [decide, test]
+    if: needs.decide.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +80,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+      - name: Tag HEAD
+        if: github.ref_type == 'branch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.decide.outputs.tag }}" -m "Portage ${{ needs.decide.outputs.tag }}"
+          git push origin "${{ needs.decide.outputs.tag }}"
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
@@ -26,6 +95,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   image:
+    needs: [decide, test]
+    if: needs.decide.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +108,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Push image
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ needs.decide.outputs.tag }}"
           docker build -t "ghcr.io/pipeopshq/portage:${TAG}" -t ghcr.io/pipeopshq/portage:latest .
           docker push "ghcr.io/pipeopshq/portage:${TAG}"
           docker push ghcr.io/pipeopshq/portage:latest

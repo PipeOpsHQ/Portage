@@ -21,6 +21,17 @@ and fails if Pages is still legacy.
 Do not import PipeOps control-plane packages into `pkg/` or `api/`. Adapters
 implement Mover / Renderer / TrafficHook.
 
+## Releases
+
+Push to `main` cuts a GitHub Release when there is a `feat`, `fix`, `perf`,
+or `e2e` commit since the last `v*` tag (`hack/next-version.sh`). `feat` →
+minor, `fix` → patch, `feat!` / `BREAKING CHANGE:` → major. `docs:`,
+`chore:`, `ci:`, and `test:` do not bump.
+
+That run tags `vX.Y.Z`, GoReleaser publishes binaries, and the image is
+`ghcr.io/pipeopshq/portage:vX.Y.Z` (+ `:latest`). A manual `git push origin vX.Y.Z`
+still works. `docs:`-only pushes do not cut a release.
+
 ## Next
 
 Back to [Install](install.md) or the [home page](index.md).

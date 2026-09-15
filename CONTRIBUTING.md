@@ -34,3 +34,10 @@ git commit -s -m "pkg/classify: detect orphan PVCs as UnknownStateful"
 ## First useful PRs
 
 See [docs](https://pipeopshq.github.io/Portage/) (`docs/` in this repo). Classifier, usefulness-gated backup, Restore that waits on probes, VolSync, cutover. `make docs` serves MkDocs locally.
+
+## Releases
+
+Push to `main` auto-tags and publishes when conventional commits since the last
+`v*` tag include `feat` / `fix` / `e2e` (see `hack/next-version.sh` and
+`.github/workflows/release.yaml`). `docs:` / `chore:` / `ci:` do not cut a
+release. Manual `git push origin vX.Y.Z` still works.
