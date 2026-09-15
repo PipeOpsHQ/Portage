@@ -17,7 +17,7 @@ make e2e
 | Useful backup | dump ≥ 64 KiB in the object store, `Policy.status.backupHealthy` |
 | Restore | `dest=dst`, dest Ready, `pg_isready`, **seeded rows on dest**, source intact |
 | Cluster objects | dest ConfigMap + CRD/CR exist after Restore; Replicate stays CatchingUp and live-updates dest |
-| PVC bytes | VolSync restic `lastSyncTime` **and** dest PVC marker file; second write lands (incremental) |
+| PVC bytes | VolSync restic `lastSyncTime` **and** dest PVC marker file; second write lands (incremental). VolSync cache PVCs are not inventoried. |
 | Cutover freeze | source replicas **0**, dest STS still present |
 
 CI: `.github/workflows/e2e.yaml` (40 minute timeout). Snapshot CRDs + Helm VolSync.

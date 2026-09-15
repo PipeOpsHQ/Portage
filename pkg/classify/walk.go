@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -84,6 +85,12 @@ func Walk(ctx context.Context, client kubernetes.Interface, namespaces []string)
 		for i := range pvcs.Items {
 			key := ns + "/" + pvcs.Items[i].Name
 			if _, ok := claimed[key]; ok {
+				continue
+			}
+			if isMoverScratchPVC(pvcs.Items[i]) {
+				// VolSync cache/clone PVCs are not user data. Treating them as
+				// workloads creates nested ReplicationSources (cache-of-cache)
+				// that steal the restic lock and starve the real PVC.
 				continue
 			}
 			inv.Workloads = append(inv.Workloads, Workload{
@@ -194,4 +201,20 @@ func markClaimed(claimed map[string]struct{}, ns string, pvcs []string) {
 	for _, p := range pvcs {
 		claimed[ns+"/"+p] = struct{}{}
 	}
+}
+
+// isMoverScratchPVC is true for volumes VolSync (or a similar mover) created
+// to hold restic/rclone cache or clones. They must not be inventoried.
+func isMoverScratchPVC(pvc corev1.PersistentVolumeClaim) bool {
+	if pvc.Labels["app.kubernetes.io/created-by"] == "volsync" {
+		return true
+	}
+	for _, o := range pvc.OwnerReferences {
+		if strings.HasPrefix(o.APIVersion, "volsync.backube/") &&
+			(o.Kind == "ReplicationSource" || o.Kind == "ReplicationDestination") {
+			return true
+		}
+	}
+	n := pvc.Name
+	return strings.HasPrefix(n, "volsync-src-") || strings.HasPrefix(n, "volsync-dst-")
 }

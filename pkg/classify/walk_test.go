@@ -114,3 +114,48 @@ func TestWalkClassifiesSTSDeployAndOrphanPVC(t *testing.T) {
 		t.Fatal("claimed PVC should not appear as its own workload")
 	}
 }
+
+func TestWalkSkipsVolSyncCachePVCs(t *testing.T) {
+	t.Parallel()
+	ns := "files"
+	client := fake.NewSimpleClientset(
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: ns},
+		},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "volsync-src-portage-data-cache",
+				Namespace: ns,
+				Labels:    map[string]string{"app.kubernetes.io/created-by": "volsync"},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "volsync.backube/v1alpha1",
+					Kind:       "ReplicationSource",
+					Name:       "portage-data",
+				}},
+			},
+		},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "volsync-dst-portage-data-cache",
+				Namespace: ns,
+			},
+		},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "volsync-src-portage-volsync-src-portage-data-cache-cache",
+				Namespace: ns,
+				Labels:    map[string]string{"app.kubernetes.io/created-by": "volsync"},
+			},
+		},
+	)
+	inv, err := Walk(context.Background(), client, []string{ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Workloads) != 1 {
+		t.Fatalf("workloads=%d want 1 (user PVC only): %+v", len(inv.Workloads), inv.Workloads)
+	}
+	if inv.Workloads[0].Name != "data" {
+		t.Fatalf("got %s, want data", inv.Workloads[0].Name)
+	}
+}

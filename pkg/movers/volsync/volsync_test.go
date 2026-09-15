@@ -159,6 +159,26 @@ func TestProbeRequiresLastSyncTimeOnBothSides(t *testing.T) {
 	}
 }
 
+func TestReplicateSkipsVolSyncCachePVC(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "files", Name: "volsync-src-portage-data-cache", PVCNames: []string{"volsync-src-portage-data-cache"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := dyn.Resource(srcGVR).Namespace("files").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("cache PVC must not get a ReplicationSource, got %d", len(list.Items))
+	}
+}
+
 func TestReplicateDirectUsesRsyncTLS(t *testing.T) {
 	t.Parallel()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{

@@ -35,6 +35,8 @@ die() {
   kubectl --context "${DST_CTX:-}" -n pg get sts,pod 2>/dev/null || true
   kubectl --context "${SRC_CTX:-}" -n files get pvc,pod,job,event,secret,replicationsources.volsync.backube -o yaml 2>/dev/null | sed '/RESTIC_PASSWORD\|AWS_SECRET\|psk:/,+1d' || true
   kubectl --context "${DST_CTX:-}" -n files get pvc,pod,job,event,secret,replicationdestinations.volsync.backube -o yaml 2>/dev/null | sed '/RESTIC_PASSWORD\|AWS_SECRET\|psk:/,+1d' || true
+  kubectl --context "${SRC_CTX:-}" -n files logs -l app.kubernetes.io/created-by=volsync --tail=80 --prefix 2>/dev/null || true
+  kubectl --context "${DST_CTX:-}" -n files logs -l app.kubernetes.io/created-by=volsync --tail=80 --prefix 2>/dev/null || true
   kubectl --context "${SRC_CTX:-}" -n volsync-system get pod 2>/dev/null || true
   kubectl --context "${SRC_CTX:-}" -n volsync-system logs deploy/volsync --tail=80 2>/dev/null || true
   kubectl --context "${DST_CTX:-}" -n volsync-system logs deploy/volsync --tail=80 2>/dev/null || true
@@ -554,10 +556,14 @@ spec:
     kind: Sanitize
 EOF
   wait_action_in files replicate-files CatchingUp 40
+  scratch=$(kc -n files get replicationsources.volsync.backube -o jsonpath='{range .items[*]}{.spec.sourcePVC}{"\n"}{end}' 2>/dev/null || true)
+  if echo "$scratch" | grep -q '^volsync-'; then
+    die "classifier must not replicate VolSync cache PVCs: $scratch"
+  fi
   got=""
   for _ in $(seq 1 30); do
-    src_sync=$(kc -n files get replicationsources.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
-    dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
+    src_sync=$(kc -n files get replicationsource/portage-data -o jsonpath='{.status.lastSyncTime}' 2>/dev/null || true)
+    dst_sync=$(kd -n files get replicationdestination/portage-data -o jsonpath='{.status.lastSyncTime}' 2>/dev/null || true)
     echo "  volsync lastSyncTime src=${src_sync:-none} dest=${dst_sync:-none}"
     kc -n files get replicationsources.volsync.backube,pod,job 2>/dev/null || echo "  no src ReplicationSource"
     kd -n files get replicationdestinations.volsync.backube,pod,job,pvc 2>/dev/null || echo "  no dest ReplicationDestination"
@@ -575,7 +581,7 @@ EOF
   write_marker "$SRC_CTX" v2
   got=""
   for _ in $(seq 1 30); do
-    dst_sync=$(kd -n files get replicationdestinations.volsync.backube -o jsonpath='{.items[0].status.lastSyncTime}' 2>/dev/null || true)
+    dst_sync=$(kd -n files get replicationdestination/portage-data -o jsonpath='{.status.lastSyncTime}' 2>/dev/null || true)
     echo "  volsync dest lastSyncTime=${dst_sync:-none}"
     if [[ -n "$dst_sync" ]]; then
       release_dest_mover

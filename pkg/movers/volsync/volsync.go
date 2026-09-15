@@ -21,6 +21,7 @@ package volsync
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -118,6 +119,9 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		}
 	}
 	pvc := w.PVCNames[0]
+	if isScratchPVC(pvc) {
+		return nil
+	}
 	name := "portage-" + w.Name
 	src := m.source(w, name, pvc)
 	_, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Create(ctx, src, metav1.CreateOptions{})
@@ -313,4 +317,8 @@ func (m Mover) schedule() string {
 		return m.Schedule
 	}
 	return "*/5 * * * *"
+}
+
+func isScratchPVC(name string) bool {
+	return strings.HasPrefix(name, "volsync-src-") || strings.HasPrefix(name, "volsync-dst-")
 }

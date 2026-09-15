@@ -17,6 +17,11 @@
   Velero, restic, or any webhook mover without rebuilding the hub
 - Kind e2e pulls MinIO from `quay.io/minio` (Docker Hub `minio/minio` is gone)
 
+### Fixed
+
+- Classifier skips VolSync cache/clone PVCs so restic does not nest
+  ReplicationSources (cache-of-cache) and starve the user PVC sync
+
 ## [0.1.0] - 2026-08-25
 
 ### Added
