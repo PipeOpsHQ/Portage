@@ -210,7 +210,7 @@ type ClusterObjectsSpec struct {
 	// IncludeClusterScoped adds Namespaces (selector), ClusterRoles/Bindings,
 	// and other cluster-scoped APIs (ClusterIssuers, …). CRDs are always
 	// included when Enabled — unknown CRs cannot restore without them.
-	// Nodes, PVs, StorageClasses, CSI, and admission webhooks stay dest-local.
+	// Nodes, PVs, StorageClasses, CSI, ServiceCIDRs, and admission webhooks stay dest-local.
 	// Defaults to true.
 	// +kubebuilder:default=true
 	// +optional

@@ -154,6 +154,11 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 				{Name: "nodes", Namespaced: false, Kind: "Node", Verbs: []string{"list", "create"}},
 				{Name: "namespaces", Namespaced: false, Kind: "Namespace", Verbs: []string{"list", "create"}},
 			}},
+			{GroupVersion: "networking.k8s.io/v1", APIResources: []metav1.APIResource{
+				{Name: "servicecidrs", Namespaced: false, Kind: "ServiceCIDR", Verbs: []string{"list", "create", "get"}},
+				{Name: "ipaddresses", Namespaced: false, Kind: "IPAddress", Verbs: []string{"list", "create", "get"}},
+				{Name: "networkpolicies", Namespaced: true, Kind: "NetworkPolicy", Verbs: []string{"list", "create", "get"}},
+			}},
 			{GroupVersion: "apiextensions.k8s.io/v1", APIResources: []metav1.APIResource{
 				{Name: "customresourcedefinitions", Namespaced: false, Kind: "CustomResourceDefinition", Verbs: []string{"list", "create", "get"}},
 			}},
@@ -193,7 +198,7 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ns, crd, clusterCR bool
+	var ns, crd, clusterCR, np bool
 	for _, g := range scoped {
 		if g.Resource == "namespaces" {
 			ns = true
@@ -207,6 +212,12 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 		if g.Resource == "nodes" {
 			t.Fatal("nodes are dest-local")
 		}
+		if g.Resource == "servicecidrs" || g.Resource == "ipaddresses" {
+			t.Fatal("ServiceCIDR/IPAddress are dest-local (immutable cluster CIDR)")
+		}
+		if g.Resource == "networkpolicies" {
+			np = true
+		}
 	}
 	if !ns {
 		t.Fatal("IncludeClusterScoped must add namespaces")
@@ -216,6 +227,9 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 	}
 	if !clusterCR {
 		t.Fatal("unknown cluster-scoped CR must stay in the graph")
+	}
+	if !np {
+		t.Fatal("namespaced NetworkPolicy must stay in the graph")
 	}
 }
 

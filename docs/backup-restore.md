@@ -52,8 +52,8 @@ etcd backup. The Kubernetes API is the data plane:
 **CRDs are always in the graph** when this is enabled — unknown CRs cannot
 restore without them. Other cluster-scoped APIs (Namespaces in the selector,
 ClusterRoles/Bindings, ClusterIssuers, …) are included by default
-(`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, admission
-webhooks, and `system:` RBAC stay dest-local.
+(`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,
+admission webhooks, and `system:` RBAC stay dest-local.
 
 STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 `403` list is skipped (not silently dropped from a GVR we could read).

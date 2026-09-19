@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Object-graph sync skips dest-local `ServiceCIDR` / `IPAddress` (immutable
+  cluster CIDR). Applying source `ServiceCIDR/kubernetes` onto dest used to
+  fail the whole pass, so namespaces never landed.
+
 ## [0.2.0] - 2026-09-15
 
 ### Added

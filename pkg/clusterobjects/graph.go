@@ -63,6 +63,10 @@ var skipResource = map[string]struct{}{
 	"podtemplates": {}, "statefulsets": {}, "deployments": {}, "daemonsets": {},
 	"storageclasses": {}, "volumeattributesclasses": {}, "jobs": {},
 	"volumesnapshots": {}, "volumesnapshotcontents": {}, "volumesnapshotclasses": {},
+	// Cluster IP range is bootstrap-owned and spec.cidrs is immutable.
+	// Applying source ServiceCIDR/kubernetes onto dest fails the whole
+	// object-graph pass (namespaces never land).
+	"servicecidrs": {}, "ipaddresses": {},
 }
 
 var skipGroup = map[string]struct{}{
