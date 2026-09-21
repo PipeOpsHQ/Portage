@@ -139,7 +139,9 @@ Webhook/Git renderers.
 
 StatefulSet restore **must** bind the restored PVC by name before the STS is
 started. `volumeClaimTemplates` creating a sibling empty claim is a failed
-Action, not a healer retry loop.
+Action, not a healer retry loop. Classifier PVC names for a StatefulSet are
+the realized claims (`<template>-<sts>-<ordinal>`). Replicate copies those
+PVCs onto dest (StorageClass remapped) so VolSync `destinationPVC` binds.
 
 ## Action machines
 

@@ -474,7 +474,7 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 	for _, w := range inv.Workloads {
 		st := portagev1alpha1.WorkloadActionStatus{Name: w.Name, Key: w.Key(), Class: w.Class, Engine: w.Engine}
 		if w.Class == portagev1alpha1.ClassStateless {
-			st.Ready, st.ProbeOK = true, true
+			st = destStatelessStatus(ctx, ep.Dest.Kube, w)
 			workloadsStatus = append(workloadsStatus, st)
 			continue
 		}
@@ -544,6 +544,30 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 			Workloads:  workloadsStatus,
 		},
 	}, nil
+}
+
+// destStatelessStatus reports dest Ready only when the workload exists and
+// has a Ready replica. Missing dest must not look healthy — Stateless is
+// GitOps-deployed, not VolSync-moved, but kubectl describe action is the
+// health signal.
+func destStatelessStatus(ctx context.Context, kube kubernetes.Interface, w classify.Workload) portagev1alpha1.WorkloadActionStatus {
+	st := portagev1alpha1.WorkloadActionStatus{Name: w.Name, Key: w.Key(), Class: w.Class, Engine: w.Engine}
+	if kube == nil {
+		st.Message = "dest client required"
+		return st
+	}
+	ready, err := workloads.Ready(ctx, kube, w)
+	if err != nil {
+		st.Message = err.Error()
+		return st
+	}
+	if !ready {
+		st.Message = "dest not Ready"
+		return st
+	}
+	st.Ready, st.ProbeOK = true, true
+	st.Message = "dest Ready"
+	return st
 }
 
 func replicateRequeue(pol *portagev1alpha1.Policy) time.Duration {
@@ -761,6 +785,7 @@ func (r *ActionReconciler) registry(ctx context.Context, pair *portagev1alpha1.C
 		Kube: ep.Source.Kube, DestKube: ep.Dest.Kube,
 		Transport: t, DestPath: path, Creds: creds,
 		Schedule: os.Getenv("PORTAGE_VOLSYNC_SCHEDULE"), SnapshotClass: snapClass,
+		StorageClassMap: storageClassMapOf(pair),
 	}
 	reg.Register(m)
 	if t == portagev1alpha1.TransportObjectStore {
@@ -771,6 +796,7 @@ func (r *ActionReconciler) registry(ctx context.Context, pair *portagev1alpha1.C
 		rc.Creds = creds
 		rc.Schedule = m.Schedule
 		rc.SnapshotClass = snapClass
+		rc.StorageClassMap = m.StorageClassMap
 		reg.Register(rc)
 	}
 	r.registerPlugins(ctx, reg)
@@ -814,6 +840,13 @@ func snapshotClassOf(pair *portagev1alpha1.ClusterPair) string {
 		}
 	}
 	return ""
+}
+
+func storageClassMapOf(pair *portagev1alpha1.ClusterPair) map[string]string {
+	if pair == nil {
+		return nil
+	}
+	return pair.Spec.StorageClassMap
 }
 
 func destPath(pair *portagev1alpha1.ClusterPair) string {

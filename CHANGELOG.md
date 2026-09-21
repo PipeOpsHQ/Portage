@@ -7,6 +7,10 @@
 - Object-graph sync skips dest-local `ServiceCIDR` / `IPAddress` (immutable
   cluster CIDR). Applying source `ServiceCIDR/kubernetes` onto dest used to
   fail the whole pass, so namespaces never landed.
+- Replicate provisions dest PVCs (source size, `storageClassMap`) before
+  VolSync `destinationPVC`, uses realized StatefulSet claim names
+  (`<template>-<sts>-<ordinal>`), and does not report Stateless Ready unless
+  dest exists.
 
 ## [0.2.0] - 2026-09-15
 

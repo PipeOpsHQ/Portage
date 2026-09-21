@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/utils/ptr"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 )
@@ -112,6 +113,50 @@ func TestWalkClassifiesSTSDeployAndOrphanPVC(t *testing.T) {
 	}
 	if _, ok := byName["PersistentVolumeClaim/data-pg"]; ok {
 		t.Fatal("claimed PVC should not appear as its own workload")
+	}
+}
+
+func TestWalkUsesRealizedStatefulSetPVCNames(t *testing.T) {
+	t.Parallel()
+	ns := "tenant-b"
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "icy-field-redis", Namespace: ns},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(2)),
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "redis", Image: "redis:7"}},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{Name: "redis-data"},
+			}},
+		},
+	}
+	client := fake.NewSimpleClientset(
+		sts,
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "redis-data-icy-field-redis-0", Namespace: ns}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "redis-data-icy-field-redis-1", Namespace: ns}},
+	)
+	inv, err := Walk(context.Background(), client, []string{ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redis Workload
+	for _, w := range inv.Workloads {
+		if w.Kind == "StatefulSet" && w.Name == "icy-field-redis" {
+			redis = w
+		}
+		if w.Kind == "PersistentVolumeClaim" {
+			t.Fatalf("realized STS PVC must not be leftover: %s", w.Name)
+		}
+	}
+	if redis.Class != portagev1alpha1.ClassKVLogical {
+		t.Fatalf("redis class=%s", redis.Class)
+	}
+	want := []string{"redis-data-icy-field-redis-0", "redis-data-icy-field-redis-1"}
+	if len(redis.PVCNames) != 2 || redis.PVCNames[0] != want[0] || redis.PVCNames[1] != want[1] {
+		t.Fatalf("PVCNames=%v want %v", redis.PVCNames, want)
 	}
 }
 

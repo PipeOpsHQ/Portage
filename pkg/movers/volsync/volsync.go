@@ -55,7 +55,8 @@ type Mover struct {
 	CopyMethod    string // Direct (kind) or Snapshot (CSI)
 	SnapshotClass string
 	// ObjectMover is "restic" (default ObjectStore, incremental) or "rclone".
-	ObjectMover string
+	ObjectMover     string
+	StorageClassMap map[string]string
 }
 
 func (m Mover) destDyn() dynamic.Interface {
@@ -114,8 +115,19 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return fmt.Errorf("volsync source secrets: %w", err)
 	}
 	if dk := m.destKube(); dk != nil && dk != m.Kube {
+		if err := ensureNamespace(ctx, dk, w.Namespace); err != nil {
+			return fmt.Errorf("volsync dest namespace: %w", err)
+		}
 		if err := CopySecrets(ctx, m.Kube, dk, w.Namespace); err != nil {
 			return fmt.Errorf("volsync dest secrets: %w", err)
+		}
+		for _, claim := range w.PVCNames {
+			if isScratchPVC(claim) {
+				continue
+			}
+			if err := m.ensureDestPVC(ctx, w.Namespace, claim); err != nil {
+				return err
+			}
 		}
 	}
 	pvc := w.PVCNames[0]
@@ -257,7 +269,8 @@ func (m Mover) resticSpec() map[string]any {
 
 // destResticSpec is the restore-side restic block. pruneIntervalDays/retain
 // exist only on ReplicationSource; putting them on dest is a field-validation
-// warning and does not restore bytes.
+// warning and does not restore bytes. destinationPVC is the realized claim
+// name; Replicate creates that PVC on dest before this CR is applied.
 func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	spec := map[string]any{
 		"repository":    resticSecretName,

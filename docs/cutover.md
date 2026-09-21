@@ -14,6 +14,12 @@
   The classifier does **not** inventory VolSync cache PVCs
   (`volsync-src-*-cache`, `volsync-dst-*-cache`). Treating them as workloads
   creates nested ReplicationSources and the user PVC never syncs.
+  Replicate creates the dest PVC (same name, size from source, StorageClass
+  via `ClusterPair.spec.storageClassMap`) before setting VolSync
+  `destinationPVC`. StatefulSet claims use the realized name
+  `<template>-<sts>-<ordinal>`, not the volumeClaimTemplate name.
+  Stateless workloads report dest Ready only if the dest object exists and
+  is Ready — they are not auto-true.
 
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`

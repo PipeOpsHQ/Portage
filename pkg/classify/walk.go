@@ -185,14 +185,21 @@ func stsPVCs(sts *appsv1.StatefulSet) []string {
 	for _, n := range names {
 		seen[n] = struct{}{}
 	}
+	replicas := int32(1)
+	if sts.Spec.Replicas != nil && *sts.Spec.Replicas > 0 {
+		replicas = *sts.Spec.Replicas
+	}
 	for _, vct := range sts.Spec.VolumeClaimTemplates {
-		// VCT materializes as <template>-<sts>-<ordinal>. Record the template
-		// name; restore binds by realized claim name later.
-		if _, ok := seen[vct.Name]; ok {
-			continue
+		// Realized claim is <template>-<sts>-<ordinal>. The bare template
+		// name is not a PVC; VolSync destinationPVC of that name never binds.
+		for i := int32(0); i < replicas; i++ {
+			n := fmt.Sprintf("%s-%s-%d", vct.Name, sts.Name, i)
+			if _, ok := seen[n]; ok {
+				continue
+			}
+			seen[n] = struct{}{}
+			names = append(names, n)
 		}
-		seen[vct.Name] = struct{}{}
-		names = append(names, vct.Name)
 	}
 	return names
 }

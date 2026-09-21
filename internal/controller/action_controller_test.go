@@ -283,6 +283,32 @@ func TestMoverOverridePrefersClassThenOp(t *testing.T) {
 	}
 }
 
+func TestDestStatelessStatusNotReadyWhenMissing(t *testing.T) {
+	t.Parallel()
+	w := classify.Workload{Namespace: "ns", Name: "needed-chickens", Kind: "Deployment", Class: portagev1alpha1.ClassStateless}
+	st := destStatelessStatus(context.Background(), k8sfake.NewSimpleClientset(), w)
+	if st.Ready || st.ProbeOK {
+		t.Fatalf("missing dest Deployment must not report Ready: %+v", st)
+	}
+	if st.Message == "" {
+		t.Fatal("expected dest-miss message")
+	}
+}
+
+func TestDestStatelessStatusReadyWhenDestExists(t *testing.T) {
+	t.Parallel()
+	w := classify.Workload{Namespace: "ns", Name: "web", Kind: "Deployment", Class: portagev1alpha1.ClassStateless}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "ns"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+		Status:     appsv1.DeploymentStatus{ReadyReplicas: 1},
+	}
+	st := destStatelessStatus(context.Background(), k8sfake.NewSimpleClientset(dep), w)
+	if !st.Ready || !st.ProbeOK {
+		t.Fatalf("dest Ready Deployment: %+v", st)
+	}
+}
+
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
