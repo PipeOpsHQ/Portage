@@ -169,6 +169,12 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 			{GroupVersion: "events.k8s.io/v1", APIResources: []metav1.APIResource{
 				{Name: "events", Namespaced: true, Kind: "Event", Verbs: []string{"list", "create"}},
 			}},
+			{GroupVersion: "volsync.backube/v1alpha1", APIResources: []metav1.APIResource{
+				{Name: "replicationsources", Namespaced: true, Kind: "ReplicationSource", Verbs: []string{"list", "create", "get"}},
+			}},
+			{GroupVersion: "capsule.clastix.io/v1beta2", APIResources: []metav1.APIResource{
+				{Name: "capsuleconfigurations", Namespaced: false, Kind: "CapsuleConfiguration", Verbs: []string{"list", "create", "get"}},
+			}},
 		},
 	}}
 	gvrs, err := Discover(disco, false)
@@ -214,6 +220,9 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 		}
 		if g.Resource == "servicecidrs" || g.Resource == "ipaddresses" {
 			t.Fatal("ServiceCIDR/IPAddress are dest-local (immutable cluster CIDR)")
+		}
+		if g.Resource == "replicationsources" || g.Resource == "capsuleconfigurations" {
+			t.Fatal("VolSync CRs and CapsuleConfiguration are dest-local")
 		}
 		if g.Resource == "networkpolicies" {
 			np = true
@@ -434,5 +443,41 @@ func TestSkipPortageCRDAndSystemClusterRole(t *testing.T) {
 	}
 	if !got["widgets.stable.example.com"] || !got["tenant-admin"] {
 		t.Fatalf("user CRD and ClusterRole dropped: %v", got)
+	}
+}
+
+func TestSyncDeletesTerminatingAndKeepsGoing(t *testing.T) {
+	t.Parallel()
+	gvr := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	dead := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dead", Namespace: "ns"}}
+	dst := dynfake.NewSimpleDynamicClient(scheme, dead)
+	now := metav1.Now()
+	items := []Item{
+		{
+			GVR: gvr, Namespaced: true, Deleting: true,
+			Obj: &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]any{"name": "dead", "namespace": "ns", "deletionTimestamp": now.UTC().Format("2006-01-02T15:04:05Z")},
+			}},
+		},
+		{
+			GVR: gvr, Namespaced: true,
+			Obj: &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]any{"name": "live", "namespace": "ns"},
+				"data":     map[string]any{"k": "v"},
+			}},
+		},
+	}
+	if err := Sync(context.Background(), dst, items); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.Resource(gvr).Namespace("ns").Get(context.Background(), "dead", metav1.GetOptions{}); err == nil {
+		t.Fatal("terminating source object must be deleted on dest")
+	}
+	if _, err := dst.Resource(gvr).Namespace("ns").Get(context.Background(), "live", metav1.GetOptions{}); err != nil {
+		t.Fatalf("later objects must still apply: %v", err)
 	}
 }

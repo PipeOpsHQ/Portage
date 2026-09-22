@@ -128,6 +128,10 @@ func fromPodOwner(ns, kind, apiVersion, name string, spec corev1.PodSpec, pvcs [
 		PVCNames:   pvcs,
 		Class:      portagev1alpha1.ClassStateless,
 	}
+	if spec.SecurityContext != nil {
+		w.FSGroup = spec.SecurityContext.FSGroup
+		w.RunAsUser = spec.SecurityContext.RunAsUser
+	}
 	if eng, ok := matchImages(images); ok {
 		w.Engine = eng.Name
 		w.Class = eng.Class

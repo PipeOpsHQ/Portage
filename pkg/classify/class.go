@@ -33,6 +33,10 @@ type Workload struct {
 	Images       []string
 	PVCNames     []string
 	Unclassified bool
+	// FSGroup / RunAsUser come from the pod template SecurityContext so
+	// VolSync restic can read non-root PVC data.
+	FSGroup   *int64
+	RunAsUser *int64
 }
 
 // Key is the stable inventory identity: namespace/kind/name.

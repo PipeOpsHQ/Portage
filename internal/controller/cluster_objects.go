@@ -67,6 +67,19 @@ func dynOf(ep clusters.Endpoints, fallback dynamic.Interface) dynamic.Interface 
 	return fallback
 }
 
+func destDynamic(ep clusters.Pair, fallback dynamic.Interface) (dynamic.Interface, error) {
+	if ep.Dest.Dynamic != nil {
+		return ep.Dest.Dynamic, nil
+	}
+	if remotePair(ep) {
+		return nil, fmt.Errorf("clusterobjects: dest dynamic client required")
+	}
+	if fallback != nil {
+		return fallback, nil
+	}
+	return ep.Source.Dynamic, nil
+}
+
 func (r *ActionReconciler) listClusterObjects(ctx context.Context, pol *portagev1alpha1.Policy, src clusters.Endpoints) ([]clusterobjects.Item, error) {
 	kube := src.Kube
 	if kube == nil {
@@ -103,9 +116,9 @@ func (r *ActionReconciler) syncClusterObjectsLive(ctx context.Context, pol *port
 		return false, err.Error(), err
 	}
 	items = clusterobjects.Sanitize(items, r.transformOpt(pair))
-	dest := dynOf(ep.Dest, r.Dynamic)
-	if dest == nil {
-		return false, "dest dynamic client required", fmt.Errorf("clusterobjects: dest dynamic client required")
+	dest, err := destDynamic(ep, r.Dynamic)
+	if err != nil {
+		return false, err.Error(), err
 	}
 	if err := clusterobjects.Sync(ctx, dest, items); err != nil {
 		return false, err.Error(), err
@@ -124,9 +137,9 @@ func (r *ActionReconciler) restoreClusterObjects(ctx context.Context, pair *port
 		return false, err.Error(), err
 	}
 	items = clusterobjects.Sanitize(items, r.transformOpt(pair))
-	dest := dynOf(ep.Dest, r.Dynamic)
-	if dest == nil {
-		return false, "dest dynamic client required", fmt.Errorf("clusterobjects: dest dynamic client required")
+	dest, err := destDynamic(ep, r.Dynamic)
+	if err != nil {
+		return false, err.Error(), err
 	}
 	if err := clusterobjects.Sync(ctx, dest, items); err != nil {
 		return false, err.Error(), err

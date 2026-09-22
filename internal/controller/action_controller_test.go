@@ -36,6 +36,7 @@ import (
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
+	"github.com/PipeOpsHQ/portage/pkg/clusters"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
 )
 
@@ -280,6 +281,25 @@ func TestMoverOverridePrefersClassThenOp(t *testing.T) {
 	sql := classify.Workload{Class: portagev1alpha1.ClassSQLLogical}
 	if got := moverOverride(pol, sql, "backup"); got != "postgres-streaming" {
 		t.Fatalf("class override=%s", got)
+	}
+}
+
+func TestEndpointsRefusesDestFallbackOnResolveError(t *testing.T) {
+	t.Parallel()
+	r := &ActionReconciler{
+		Kube: k8sfake.NewSimpleClientset(),
+		Resolve: func(context.Context, *portagev1alpha1.ClusterPair) (clusters.Pair, error) {
+			return clusters.Pair{}, fmt.Errorf("kubeconfig missing")
+		},
+	}
+	pair := &portagev1alpha1.ClusterPair{Spec: portagev1alpha1.ClusterPairSpec{
+		Destination: portagev1alpha1.ClusterRef{
+			Name:             "sa1",
+			KubeconfigSecret: &portagev1alpha1.SecretKeyRef{Name: "dest-kubeconfig"},
+		},
+	}}
+	if _, err := r.endpoints(context.Background(), pair); err == nil {
+		t.Fatal("remote dest must not fall back to in-cluster")
 	}
 }
 

@@ -58,6 +58,8 @@ func ri(dyn dynamic.Interface, it Item) dynamic.ResourceInterface {
 
 // Sync creates or updates dest objects. Existing live PVC data is never in
 // this graph. Already-exists is updated (active replication), not skipped.
+// Source objects with deletionTimestamp are Deleted on dest. One object's
+// error does not abort the rest of the pass.
 func Sync(ctx context.Context, dyn dynamic.Interface, items []Item) error {
 	if dyn == nil {
 		return fmt.Errorf("clusterobjects: dest dynamic client required")
@@ -70,27 +72,47 @@ func Sync(ctx context.Context, dyn dynamic.Interface, items []Item) error {
 		}
 		return sorted[i].Obj.GetName() < sorted[j].Obj.GetName()
 	})
+	var first error
 	for _, it := range sorted {
 		if it.Obj == nil {
 			continue
 		}
-		r := ri(dyn, it)
-		_, err := r.Create(ctx, it.Obj, metav1.CreateOptions{})
-		if errors.IsAlreadyExists(err) {
-			cur, getErr := r.Get(ctx, it.Obj.GetName(), metav1.GetOptions{})
-			if getErr != nil {
-				return fmt.Errorf("get dest %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), getErr)
-			}
-			it.Obj.SetResourceVersion(cur.GetResourceVersion())
-			it.Obj.SetUID(cur.GetUID())
-			_, err = r.Update(ctx, it.Obj, metav1.UpdateOptions{})
+		if err := syncOne(ctx, dyn, it); err != nil && first == nil {
+			first = err
 		}
-		if skipListErr(err) {
-			continue
+	}
+	return first
+}
+
+func syncOne(ctx context.Context, dyn dynamic.Interface, it Item) error {
+	r := ri(dyn, it)
+	if it.Deleting || isDeleting(it.Obj) {
+		err := r.Delete(ctx, it.Obj.GetName(), metav1.DeleteOptions{})
+		if errors.IsNotFound(err) || skipListErr(err) {
+			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("sync %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), err)
+			return fmt.Errorf("delete dest %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), err)
 		}
+		return nil
+	}
+	it.Obj.SetDeletionTimestamp(nil)
+	it.Obj.SetDeletionGracePeriodSeconds(nil)
+	_, err := r.Create(ctx, it.Obj, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		cur, getErr := r.Get(ctx, it.Obj.GetName(), metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("get dest %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), getErr)
+		}
+		it.Obj.SetResourceVersion(cur.GetResourceVersion())
+		it.Obj.SetUID(cur.GetUID())
+		_, err = r.Update(ctx, it.Obj, metav1.UpdateOptions{})
+	}
+	if skipListErr(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("sync %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), err)
 	}
 	return nil
 }
@@ -103,9 +125,13 @@ func Attest(ctx context.Context, dyn dynamic.Interface, items []Item) (bool, str
 	if len(items) == 0 {
 		return true, "no cluster objects"
 	}
-	var missing int
+	var live, missing int
 	var first string
 	for _, it := range items {
+		if it.Deleting {
+			continue
+		}
+		live++
 		obj, err := ri(dyn, it).Get(ctx, it.Obj.GetName(), metav1.GetOptions{})
 		if err != nil {
 			missing++
@@ -121,10 +147,13 @@ func Attest(ctx context.Context, dyn dynamic.Interface, items []Item) (bool, str
 			}
 		}
 	}
-	if missing > 0 {
-		return false, fmt.Sprintf("%d/%d dest objects missing (%s)", missing, len(items), first)
+	if live == 0 {
+		return true, "no cluster objects"
 	}
-	return true, fmt.Sprintf("%d dest objects attested", len(items))
+	if missing > 0 {
+		return false, fmt.Sprintf("%d/%d dest objects missing (%s)", missing, live, first)
+	}
+	return true, fmt.Sprintf("%d dest objects attested", live)
 }
 
 func crdEstablished(obj *unstructured.Unstructured) bool {

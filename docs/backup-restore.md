@@ -53,7 +53,8 @@ etcd backup. The Kubernetes API is the data plane:
 restore without them. Other cluster-scoped APIs (Namespaces in the selector,
 ClusterRoles/Bindings, ClusterIssuers, …) are included by default
 (`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,
-admission webhooks, and `system:` RBAC stay dest-local.
+CapsuleConfiguration, VolSync CRs, admission webhooks, and `system:` RBAC stay
+dest-local. Source objects with `deletionTimestamp` are Deleted on dest.
 
 STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 `403` list is skipped (not silently dropped from a GVR we could read).

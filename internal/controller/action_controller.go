@@ -82,25 +82,39 @@ func (r *ActionReconciler) store() objectstore.Store {
 	return objectstore.FromEnv()
 }
 
-func (r *ActionReconciler) endpoints(ctx context.Context, pair *portagev1alpha1.ClusterPair) clusters.Pair {
+func (r *ActionReconciler) endpoints(ctx context.Context, pair *portagev1alpha1.ClusterPair) (clusters.Pair, error) {
 	loc := clusters.Local("local", r.Kube, r.Dynamic, r.Exec, nil)
-	if r.Resolve != nil {
-		p, err := r.Resolve(ctx, pair)
-		if err == nil {
-			if p.Source.Kube == nil {
-				p.Source = loc
-			}
-			if p.Dest.Kube == nil {
-				p.Dest = p.Source
-			}
-			return p
-		}
-		log.FromContext(ctx).Error(err, "resolve ClusterPair; falling back to in-cluster dest")
-	}
-	if pair != nil {
+	if pair != nil && pair.Spec.Source.Name != "" {
 		loc.Name = pair.Spec.Source.Name
 	}
-	return clusters.Pair{Source: loc, Dest: loc}
+	remoteDest := pair != nil && pair.Spec.Destination.HasRemoteAuth()
+	if r.Resolve != nil {
+		p, err := r.Resolve(ctx, pair)
+		if err != nil {
+			if remoteDest {
+				return clusters.Pair{}, fmt.Errorf("resolve dest cluster: %w", err)
+			}
+			log.FromContext(ctx).Error(err, "resolve ClusterPair; using in-cluster")
+			return clusters.Pair{Source: loc, Dest: loc}, nil
+		}
+		if p.Source.Kube == nil {
+			p.Source = loc
+		}
+		if p.Dest.Kube == nil {
+			if remoteDest {
+				return clusters.Pair{}, fmt.Errorf("destination cluster %q client is empty", pair.Spec.Destination.Name)
+			}
+			p.Dest = p.Source
+		}
+		if remoteDest && p.Dest.Kube == p.Source.Kube {
+			return clusters.Pair{}, fmt.Errorf("destination cluster %q resolved to the source cluster; refusing to write dest CRs in-cluster", pair.Spec.Destination.Name)
+		}
+		return p, nil
+	}
+	if remoteDest {
+		return clusters.Pair{}, fmt.Errorf("clusterpair dest has remote auth but no resolver")
+	}
+	return clusters.Pair{Source: loc, Dest: loc}, nil
 }
 
 func (r *ActionReconciler) now() time.Time {
@@ -115,7 +129,7 @@ func (r *ActionReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=portage.io,resources=clusterpairs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=portage.io,resources=plugins,verbs=get;list;watch
 // +kubebuilder:rbac:groups=portage.io,resources=policies,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources;replicationdestinations,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources;replicationdestinations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=portage.io,resources=policies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
@@ -162,11 +176,18 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return r.fail(ctx, act, err.Error())
 	}
-	ep := r.endpoints(ctx, pair)
+	ep, err := r.endpoints(ctx, pair)
+	if err != nil {
+		logger.Error(err, "resolve ClusterPair")
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, err
+	}
 	if ep.Source.Kube == nil {
 		ep.Source.Kube, ep.Source.Dynamic, ep.Source.Exec = r.Kube, r.Dynamic, r.Exec
 	}
 	if ep.Dest.Kube == nil {
+		if pair != nil && pair.Spec.Destination.HasRemoteAuth() {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, fmt.Errorf("destination cluster client is empty")
+		}
 		ep.Dest = ep.Source
 	}
 
@@ -775,7 +796,7 @@ func (r *ActionReconciler) registry(ctx context.Context, pair *portagev1alpha1.C
 		dyn = r.Dynamic
 	}
 	destDyn := ep.Dest.Dynamic
-	if destDyn == nil {
+	if destDyn == nil && !remotePair(ep) {
 		destDyn = dyn
 	}
 	creds := objectstore.CredsFromEnv()
@@ -840,6 +861,10 @@ func snapshotClassOf(pair *portagev1alpha1.ClusterPair) string {
 		}
 	}
 	return ""
+}
+
+func remotePair(ep clusters.Pair) bool {
+	return ep.Source.Kube != nil && ep.Dest.Kube != nil && ep.Source.Kube != ep.Dest.Kube
 }
 
 func storageClassMapOf(pair *portagev1alpha1.ClusterPair) map[string]string {

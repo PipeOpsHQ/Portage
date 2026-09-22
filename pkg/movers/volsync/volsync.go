@@ -63,6 +63,9 @@ func (m Mover) destDyn() dynamic.Interface {
 	if m.DestDynamic != nil {
 		return m.DestDynamic
 	}
+	if m.remoteDest() {
+		return nil
+	}
 	return m.Dynamic
 }
 
@@ -71,6 +74,10 @@ func (m Mover) destKube() kubernetes.Interface {
 		return m.DestKube
 	}
 	return m.Kube
+}
+
+func (m Mover) remoteDest() bool {
+	return m.DestKube != nil && m.Kube != nil && m.DestKube != m.Kube
 }
 
 func (m Mover) Name() string {
@@ -135,21 +142,53 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return nil
 	}
 	name := "portage-" + w.Name
-	src := m.source(w, name, pvc)
-	_, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Create(ctx, src, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("volsync source: %w", err)
-	}
 	dstClient := m.destDyn()
 	if dstClient == nil {
 		return fmt.Errorf("volsync: dest dynamic client required")
 	}
+	if dstClient == m.Dynamic && m.remoteDest() {
+		return fmt.Errorf("volsync: dest dynamic client is the source cluster; refusing to write ReplicationDestination in-cluster")
+	}
+	m.scrubMisplaced(ctx, w.Namespace, name)
+	src := m.source(w, name, pvc)
+	if err := applyNamespaced(ctx, m.Dynamic, srcGVR, src); err != nil {
+		return fmt.Errorf("volsync source: %w", err)
+	}
 	dst := m.destination(w, name)
-	_, err = dstClient.Resource(dstGVR).Namespace(w.Namespace).Create(ctx, dst, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err := applyNamespaced(ctx, dstClient, dstGVR, dst); err != nil {
 		return fmt.Errorf("volsync destination: %w", err)
 	}
 	return nil
+}
+
+// scrubMisplaced drops CRs that a bad reconcile (dest=source fallback or
+// cluster-object copy) left on the wrong cluster. Those leftovers claim the
+// cache PVC name and block the correct CR forever.
+func (m Mover) scrubMisplaced(ctx context.Context, ns, name string) {
+	if m.destDyn() == nil || m.destDyn() == m.Dynamic {
+		return
+	}
+	_ = m.destDyn().Resource(srcGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	_ = m.Dynamic.Resource(dstGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func applyNamespaced(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) error {
+	if dyn == nil {
+		return fmt.Errorf("client required")
+	}
+	ns, name := obj.GetNamespace(), obj.GetName()
+	_, err := dyn.Resource(gvr).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
+	if err == nil || !errors.IsAlreadyExists(err) {
+		return err
+	}
+	cur, err := dyn.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	obj.SetResourceVersion(cur.GetResourceVersion())
+	obj.SetUID(cur.GetUID())
+	_, err = dyn.Resource(gvr).Namespace(ns).Update(ctx, obj, metav1.UpdateOptions{})
+	return err
 }
 
 func (m Mover) Restore(context.Context, classify.Workload, movers.Artifact, movers.ClusterHandle) error {
@@ -204,7 +243,7 @@ func (m Mover) source(w classify.Workload, name, pvc string) *unstructured.Unstr
 		if m.ObjectMover == "rclone" {
 			spec["rclone"] = m.rcloneSpec(w)
 		} else {
-			spec["restic"] = m.resticSpec()
+			spec["restic"] = m.resticSpec(w)
 		}
 	} else {
 		spec["rsyncTLS"] = map[string]any{
@@ -253,7 +292,7 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 	}}
 }
 
-func (m Mover) resticSpec() map[string]any {
+func (m Mover) resticSpec(w classify.Workload) map[string]any {
 	spec := map[string]any{
 		"repository":        resticSecretName,
 		"copyMethod":        m.copyMethod(),
@@ -263,6 +302,9 @@ func (m Mover) resticSpec() map[string]any {
 	}
 	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
 		spec["volumeSnapshotClassName"] = m.SnapshotClass
+	}
+	if sc := moverSecurityContext(w); sc != nil {
+		spec["moverSecurityContext"] = sc
 	}
 	return spec
 }
@@ -286,7 +328,24 @@ func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
 		spec["volumeSnapshotClassName"] = m.SnapshotClass
 	}
+	if sc := moverSecurityContext(w); sc != nil {
+		spec["moverSecurityContext"] = sc
+	}
 	return spec
+}
+
+func moverSecurityContext(w classify.Workload) map[string]any {
+	if w.FSGroup == nil && w.RunAsUser == nil {
+		return nil
+	}
+	sc := map[string]any{}
+	if w.FSGroup != nil {
+		sc["fsGroup"] = *w.FSGroup
+	}
+	if w.RunAsUser != nil {
+		sc["runAsUser"] = *w.RunAsUser
+	}
+	return sc
 }
 
 func (m Mover) rcloneSpec(w classify.Workload) map[string]any {

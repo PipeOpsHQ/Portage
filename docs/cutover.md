@@ -23,7 +23,10 @@
 
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`
-keeps one `replicate-<policy>` Action running.
+keeps one `replicate-<policy>` Action running. A ClusterPair with dest
+kubeconfig/cloud auth **must** resolve dest; Portage will not write
+ReplicationDestination on the source cluster. Restic movers copy the workload
+`fsGroup`/`runAsUser` into `moverSecurityContext`.
 
 `Succeeded` is only for dry-run. Dest in sync is `CatchingUp` with
 `replica lag=0; dest probed; live-sync`. Lag or dest miss stays CatchingUp

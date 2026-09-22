@@ -11,6 +11,11 @@
   VolSync `destinationPVC`, uses realized StatefulSet claim names
   (`<template>-<sts>-<ordinal>`), and does not report Stateless Ready unless
   dest exists.
+- Dual-cluster Replicate no longer falls back dest→source on Resolve
+  failure (that wrote ReplicationDestination on the source cluster).
+  Misplaced VolSync CRs are deleted; cluster-object sync skips VolSync
+  and CapsuleConfiguration; source deletions Delete dest instead of
+  Update; restic `moverSecurityContext` copies the workload fsGroup.
 
 ## [0.2.0] - 2026-09-15
 

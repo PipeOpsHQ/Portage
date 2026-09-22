@@ -75,6 +75,8 @@ func Object(obj *unstructured.Unstructured, opt Options) {
 	obj.SetGeneration(0)
 	obj.SetManagedFields(nil)
 	obj.SetOwnerReferences(nil)
+	obj.SetDeletionTimestamp(nil)
+	obj.SetDeletionGracePeriodSeconds(nil)
 	unstructured.RemoveNestedField(obj.Object, "status")
 	unstructured.RemoveNestedField(obj.Object, "spec", "volumeName")
 	unstructured.RemoveNestedField(obj.Object, "spec", "clusterIP")

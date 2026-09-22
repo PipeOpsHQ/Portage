@@ -157,6 +157,7 @@ rules:
   - replicationsources
   verbs:
   - create
+  - delete
   - get
   - list
   - patch

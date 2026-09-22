@@ -20,12 +20,14 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
@@ -176,6 +178,91 @@ func TestReplicateSkipsVolSyncCachePVC(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatalf("cache PVC must not get a ReplicationSource, got %d", len(list.Items))
+	}
+}
+
+func TestResticMoverSecurityContextFromWorkload(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	fs, uid := int64(999), int64(999)
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}, FSGroup: &fs, RunAsUser: &uid}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, _, _ := unstructured.NestedInt64(src.Object, "spec", "restic", "moverSecurityContext", "fsGroup")
+	if g != 999 {
+		t.Fatalf("fsGroup=%d", g)
+	}
+}
+
+func TestDestDynNilWhenRemoteWithoutDestDynamic(t *testing.T) {
+	t.Parallel()
+	srcKube := k8sfake.NewSimpleClientset()
+	dstKube := k8sfake.NewSimpleClientset()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	m := Mover{Dynamic: dyn, Kube: srcKube, DestKube: dstKube, Transport: portagev1alpha1.TransportObjectStore}
+	if m.destDyn() != nil {
+		t.Fatal("remote dest without DestDynamic must not fall back to source")
+	}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
+	err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{})
+	if err == nil {
+		t.Fatal("must refuse to write ReplicationDestination on the source cluster")
+	}
+}
+
+func TestReplicateScrubsMisplacedCRs(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	srcDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dstDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	srcKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
+	dstKube := k8sfake.NewSimpleClientset()
+	misRS := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationSource",
+		"metadata": map[string]any{"name": "portage-pg", "namespace": "ns"},
+	}}
+	misRD := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationDestination",
+		"metadata": map[string]any{"name": "portage-pg", "namespace": "ns"},
+	}}
+	if _, err := dstDyn.Resource(srcGVR).Namespace("ns").Create(context.Background(), misRS, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcDyn.Resource(dstGVR).Namespace("ns").Create(context.Background(), misRD, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	m := Mover{
+		Dynamic: srcDyn, DestDynamic: dstDyn,
+		Kube: srcKube, DestKube: dstKube,
+		Transport: portagev1alpha1.TransportObjectStore,
+	}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dstDyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err == nil {
+		t.Fatal("ReplicationSource must not remain on dest")
+	}
+	if _, err := srcDyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err == nil {
+		t.Fatal("ReplicationDestination must not remain on source")
 	}
 }
 

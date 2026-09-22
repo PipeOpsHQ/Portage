@@ -41,6 +41,9 @@ type Item struct {
 	GVR        schema.GroupVersionResource
 	Namespaced bool
 	Obj        *unstructured.Unstructured
+	// Deleting is true when source has deletionTimestamp. Sync must Delete
+	// dest, not Update (those metadata fields are immutable).
+	Deleting bool
 }
 
 // Ref is a discovered GVR. Namespaced=false is listed cluster-wide (CRDs, ClusterRoles, cluster-scoped CRs).
@@ -67,6 +70,11 @@ var skipResource = map[string]struct{}{
 	// Applying source ServiceCIDR/kubernetes onto dest fails the whole
 	// object-graph pass (namespaces never land).
 	"servicecidrs": {}, "ipaddresses": {},
+	// Capsule cluster singleton — every install has exactly one, under its
+	// own name. Creating the source name on dest is rejected by admission.
+	"capsuleconfigurations":   {},
+	"replicationsources":      {},
+	"replicationdestinations": {},
 }
 
 var skipGroup = map[string]struct{}{
@@ -81,6 +89,7 @@ var skipGroup = map[string]struct{}{
 	"apiregistration.k8s.io":       {},
 	"flowcontrol.apiserver.k8s.io": {},
 	"admissionregistration.k8s.io": {},
+	"volsync.backube":              {},
 }
 
 var skipClusterRole = map[string]struct{}{
@@ -223,7 +232,7 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 				if skipObj(gvr, &obj) {
 					continue
 				}
-				out = append(out, Item{GVR: gvr, Namespaced: false, Obj: obj.DeepCopy()})
+				out = append(out, Item{GVR: gvr, Namespaced: false, Obj: obj.DeepCopy(), Deleting: isDeleting(&obj)})
 			}
 			continue
 		}
@@ -242,7 +251,7 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 				if skipObj(gvr, &list.Items[i]) {
 					continue
 				}
-				out = append(out, Item{GVR: gvr, Namespaced: true, Obj: list.Items[i].DeepCopy()})
+				out = append(out, Item{GVR: gvr, Namespaced: true, Obj: list.Items[i].DeepCopy(), Deleting: isDeleting(&list.Items[i])})
 			}
 		}
 	}
@@ -284,6 +293,14 @@ func skipObj(gvr schema.GroupVersionResource, obj *unstructured.Unstructured) bo
 	return false
 }
 
+func isDeleting(obj *unstructured.Unstructured) bool {
+	if obj == nil {
+		return false
+	}
+	ts := obj.GetDeletionTimestamp()
+	return ts != nil && !ts.IsZero()
+}
+
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {
@@ -299,7 +316,7 @@ func Sanitize(items []Item, opt transform.Options) []Item {
 	for _, it := range items {
 		cp := it.Obj.DeepCopy()
 		transform.Object(cp, opt)
-		out = append(out, Item{GVR: it.GVR, Namespaced: it.Namespaced, Obj: cp})
+		out = append(out, Item{GVR: it.GVR, Namespaced: it.Namespaced, Obj: cp, Deleting: it.Deleting})
 	}
 	return out
 }
