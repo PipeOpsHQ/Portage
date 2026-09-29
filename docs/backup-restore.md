@@ -25,7 +25,8 @@ kubectl -n tenant-a get action backup-1 -w
 
 1. Preflight: refuse if any stateful artifact is not useful.
 2. Export source objects, render dest (`Sanitize`, `Git`, or `Webhook`; always
-   sanitized after).
+   sanitized after). `runtimeClassName` is remapped via
+   `ClusterPair.spec.runtimeClassMap` or stripped when unmapped.
 3. Apply to **dest** (PVC first, then STS/Deploy) using the ClusterPair dest
    client (kubeconfig or cloud identity) — not the hub cache.
 4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql`

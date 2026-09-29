@@ -26,3 +26,6 @@ spec:
   storageClassMap:
     gp3: standard-csi
     premium-rwo: pd-balanced
+  # Unmapped RuntimeClasses are stripped (dest default runtime).
+  runtimeClassMap:
+    gvisor: kata-vm-isolation

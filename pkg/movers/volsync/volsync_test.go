@@ -203,6 +203,80 @@ func TestResticMoverSecurityContextFromWorkload(t *testing.T) {
 	}
 }
 
+func TestResticPrivilegedMoversWhenNoFSGroup(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	ns, err := kube.CoreV1().Namespaces().Get(context.Background(), "ns", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Annotations[privilegedMoversAnnotation] != "true" {
+		t.Fatalf("annotations=%v", ns.Annotations)
+	}
+}
+
+func TestResticNoPrivilegedMoversWhenFSGroupSet(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	fs := int64(999)
+	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}, FSGroup: &fs}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	ns, err := kube.CoreV1().Namespaces().Get(context.Background(), "ns", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Annotations[privilegedMoversAnnotation] == "true" {
+		t.Fatal("fsGroup workloads must not elevate the namespace")
+	}
+}
+
+func TestResticPrivilegedMoversOnDestNamespace(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	srcDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dstDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	srcKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
+	dstKube := k8sfake.NewSimpleClientset()
+	m := Mover{
+		Dynamic: srcDyn, DestDynamic: dstDyn,
+		Kube: srcKube, DestKube: dstKube,
+		Transport: portagev1alpha1.TransportObjectStore,
+	}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	ns, err := dstKube.CoreV1().Namespaces().Get(context.Background(), "ns", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Annotations[privilegedMoversAnnotation] != "true" {
+		t.Fatalf("dest annotations=%v", ns.Annotations)
+	}
+}
+
 func TestDestDynNilWhenRemoteWithoutDestDynamic(t *testing.T) {
 	t.Parallel()
 	srcKube := k8sfake.NewSimpleClientset()

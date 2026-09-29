@@ -70,7 +70,7 @@ clusters can peer.
 ### ClusterPair (cluster-scoped)
 
 Source + dest cluster refs (kubeconfig **or** Azure/AWS/GCP identity),
-transport, StorageClass maps. See [Cluster auth](cluster-auth.md).
+transport, StorageClass and RuntimeClass maps. See [Cluster auth](cluster-auth.md).
 
 ### Policy (namespaced)
 
@@ -133,9 +133,10 @@ Unknown is **opt-out**, never opt-in. Mover scratch is the exception.
 ## Transform
 
 `pkg/transform` drops `selected-node`, zone labels, cloud LB annotations,
-`volumeName`, `clusterIP`, nodeAffinity, Velero restore labels, and remaps
-StorageClass. Applied by the Sanitize renderer and as defense in depth for
-Webhook/Git renderers.
+`volumeName`, `clusterIP`, nodeAffinity, Velero restore labels, remaps
+StorageClass, and remaps or strips `runtimeClassName` (unmapped classes
+would fail dest admission). Applied by the Sanitize renderer and as
+defense in depth for Webhook/Git renderers.
 
 StatefulSet restore **must** bind the restored PVC by name before the STS is
 started. `volumeClaimTemplates` creating a sibling empty claim is a failed

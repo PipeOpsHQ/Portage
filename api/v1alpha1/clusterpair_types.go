@@ -213,6 +213,13 @@ type ClusterPairSpec struct {
 	// SnapshotClassMap remaps VolumeSnapshotClass names across clusters.
 	// +optional
 	SnapshotClassMap map[string]string `json:"snapshotClassMap,omitempty"`
+
+	// RuntimeClassMap remaps source RuntimeClass names (spec.runtimeClassName)
+	// to destination names. The Sanitize renderer consumes this. An unmapped
+	// class, or a mapping to empty, is stripped so dest uses its default
+	// runtime instead of failing admission (gvisor, kata, WASM, nvidia, …).
+	// +optional
+	RuntimeClassMap map[string]string `json:"runtimeClassMap,omitempty"`
 }
 
 // ClusterPairPhase is a high-level pairing health.

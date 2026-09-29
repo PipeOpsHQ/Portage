@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- Sanitize maps `spec.runtimeClassName` via `ClusterPair.spec.runtimeClassMap`
+  (pod, workload template, CronJob). Unmapped classes are stripped so dest
+  admission does not reject gvisor/kata/WASM/nvidia that exist only on source.
+- Restic movers set `volsync.backube/privileged-movers=true` on the namespace
+  when the workload declares neither `fsGroup` nor `runAsUser`, so VolSync
+  grants `DAC_OVERRIDE` for marketplace images that own PVC data (mode 700,
+  UID 999) via capabilities instead of a pod security context.
 - Object-graph sync skips dest-local `ServiceCIDR` / `IPAddress` (immutable
   cluster CIDR). Applying source `ServiceCIDR/kubernetes` onto dest used to
   fail the whole pass, so namespaces never landed.

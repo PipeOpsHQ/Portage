@@ -67,10 +67,7 @@ func (g Git) Render(ctx context.Context, req Request) ([]*unstructured.Unstructu
 	if err != nil {
 		return nil, err
 	}
-	opt := g.Options
-	if req.Pair != nil && opt.StorageClassMap == nil {
-		opt.StorageClassMap = req.Pair.Spec.StorageClassMap
-	}
+	opt := pairOptions(g.Options, req.Pair)
 	for _, o := range objs {
 		transform.Object(o, opt)
 	}

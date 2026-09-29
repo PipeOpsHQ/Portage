@@ -34,7 +34,9 @@ useful artifact (≥ 64 KiB dump). Portable copies live in the object store
 
 `ClusterPair` holds two cluster refs. Actions resolve **source** vs **dest**
 clients via kubeconfig **or** cloud identity (Azure Entra ID, AWS IAM, GCP ADC).
-Empty dest auth means in-cluster (same API).
+Empty dest auth means in-cluster (same API). `storageClassMap` and
+`runtimeClassMap` remap classes that differ across clouds; unmapped
+RuntimeClasses are stripped.
 
 Transport:
 

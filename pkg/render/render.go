@@ -55,14 +55,24 @@ func (Sanitize) Kind() portagev1alpha1.RendererKind {
 // Render implements Renderer.
 func (s Sanitize) Render(_ context.Context, req Request) ([]*unstructured.Unstructured, error) {
 	out := make([]*unstructured.Unstructured, 0, len(req.SourceObjects))
-	opt := s.Options
-	if req.Pair != nil && opt.StorageClassMap == nil {
-		opt.StorageClassMap = req.Pair.Spec.StorageClassMap
-	}
+	opt := pairOptions(s.Options, req.Pair)
 	for _, src := range req.SourceObjects {
 		cp := src.DeepCopy()
 		transform.Object(cp, opt)
 		out = append(out, cp)
 	}
 	return out, nil
+}
+
+func pairOptions(opt transform.Options, pair *portagev1alpha1.ClusterPair) transform.Options {
+	if pair == nil {
+		return opt
+	}
+	if opt.StorageClassMap == nil {
+		opt.StorageClassMap = pair.Spec.StorageClassMap
+	}
+	if opt.RuntimeClassMap == nil {
+		opt.RuntimeClassMap = pair.Spec.RuntimeClassMap
+	}
+	return opt
 }

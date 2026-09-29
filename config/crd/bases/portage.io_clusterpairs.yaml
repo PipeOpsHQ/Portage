@@ -246,6 +246,15 @@ spec:
                 required:
                 - name
                 type: object
+              runtimeClassMap:
+                additionalProperties:
+                  type: string
+                description: |-
+                  RuntimeClassMap remaps source RuntimeClass names (spec.runtimeClassName)
+                  to destination names. The Sanitize renderer consumes this. An unmapped
+                  class, or a mapping to empty, is stripped so dest uses its default
+                  runtime instead of failing admission (gvisor, kata, WASM, nvidia, …).
+                type: object
               snapshotClassMap:
                 additionalProperties:
                   type: string

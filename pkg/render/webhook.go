@@ -88,10 +88,7 @@ func (w Webhook) Render(ctx context.Context, req Request) ([]*unstructured.Unstr
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
 		return nil, fmt.Errorf("webhook renderer: decode: %w", err)
 	}
-	opt := w.Options
-	if req.Pair != nil && opt.StorageClassMap == nil {
-		opt.StorageClassMap = req.Pair.Spec.StorageClassMap
-	}
+	opt := pairOptions(w.Options, req.Pair)
 	out := make([]*unstructured.Unstructured, 0, len(decoded.Objects))
 	for _, raw := range decoded.Objects {
 		obj := &unstructured.Unstructured{Object: raw}

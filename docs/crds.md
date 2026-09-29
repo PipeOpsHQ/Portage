@@ -5,7 +5,7 @@ API group: `portage.io/v1alpha1`.
 ## ClusterPair (cluster-scoped)
 
 Source and destination cluster refs, `Direct` or `ObjectStore` transport,
-StorageClass maps.
+StorageClass / RuntimeClass maps.
 
 ```yaml
 apiVersion: portage.io/v1alpha1
@@ -30,6 +30,8 @@ spec:
   transport: ObjectStore
   storageClassMap:
     gp3: standard-csi
+  runtimeClassMap:
+    gvisor: kata-vm-isolation   # unmapped classes are stripped
 ```
 
 Each `ClusterRef` uses **exactly one** auth method (or none = in-cluster):

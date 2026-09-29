@@ -62,6 +62,10 @@ type Options struct {
 	StorageClassMap map[string]string
 	// DefaultStorageClass is used when the source class is missing from the map.
 	DefaultStorageClass string
+	// RuntimeClassMap remaps spec.runtimeClassName (and nested pod templates).
+	// Unmapped names are stripped so dest admission does not reject a class
+	// that exists only on the source cluster.
+	RuntimeClassMap map[string]string
 }
 
 // Object mutates a generic object: drop status, UID, resourceVersion,
@@ -87,6 +91,7 @@ func Object(obj *unstructured.Unstructured, opt Options) {
 	obj.SetLabels(filterLabels(obj.GetLabels()))
 
 	remapStorageClass(obj, opt)
+	remapRuntimeClass(obj, opt)
 	stripAffinity(obj)
 }
 
@@ -176,6 +181,41 @@ func mapSC(src string, opt Options) string {
 		return opt.DefaultStorageClass
 	}
 	return src
+}
+
+// remapRuntimeClass walks nested maps and remaps or strips runtimeClassName.
+// Pod, Deployment/StatefulSet/DaemonSet/Job templates, and CronJob job
+// templates all store the field at different depths.
+func remapRuntimeClass(obj *unstructured.Unstructured, opt Options) {
+	if obj == nil {
+		return
+	}
+	walkRuntimeClass(obj.Object, opt)
+}
+
+func walkRuntimeClass(m map[string]any, opt Options) {
+	if m == nil {
+		return
+	}
+	if src, ok := m["runtimeClassName"].(string); ok && src != "" {
+		if dst, mapped := opt.RuntimeClassMap[src]; mapped && dst != "" {
+			m["runtimeClassName"] = dst
+		} else {
+			delete(m, "runtimeClassName")
+		}
+	}
+	for _, v := range m {
+		switch t := v.(type) {
+		case map[string]any:
+			walkRuntimeClass(t, opt)
+		case []any:
+			for _, item := range t {
+				if nested, ok := item.(map[string]any); ok {
+					walkRuntimeClass(nested, opt)
+				}
+			}
+		}
+	}
 }
 
 func stripAffinity(obj *unstructured.Unstructured) {

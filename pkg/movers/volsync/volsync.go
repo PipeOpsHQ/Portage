@@ -121,9 +121,19 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, path); err != nil {
 		return fmt.Errorf("volsync source secrets: %w", err)
 	}
+	if needsPrivilegedMover(w) {
+		if err := enablePrivilegedMovers(ctx, m.Kube, w.Namespace); err != nil {
+			return fmt.Errorf("volsync privileged movers: %w", err)
+		}
+	}
 	if dk := m.destKube(); dk != nil && dk != m.Kube {
 		if err := ensureNamespace(ctx, dk, w.Namespace); err != nil {
 			return fmt.Errorf("volsync dest namespace: %w", err)
+		}
+		if needsPrivilegedMover(w) {
+			if err := enablePrivilegedMovers(ctx, dk, w.Namespace); err != nil {
+				return fmt.Errorf("volsync dest privileged movers: %w", err)
+			}
 		}
 		if err := CopySecrets(ctx, m.Kube, dk, w.Namespace); err != nil {
 			return fmt.Errorf("volsync dest secrets: %w", err)
@@ -346,6 +356,34 @@ func moverSecurityContext(w classify.Workload) map[string]any {
 		sc["runAsUser"] = *w.RunAsUser
 	}
 	return sc
+}
+
+// VolSync grants DAC_OVERRIDE (and CHOWN/FOWNER) only when the namespace
+// is annotated. Marketplace images that own PVC data (mode 700, UID 999)
+// via capabilities instead of declaring fsGroup need that fallback.
+const privilegedMoversAnnotation = "volsync.backube/privileged-movers"
+
+func needsPrivilegedMover(w classify.Workload) bool {
+	return w.FSGroup == nil && w.RunAsUser == nil
+}
+
+func enablePrivilegedMovers(ctx context.Context, kube kubernetes.Interface, ns string) error {
+	if kube == nil || ns == "" {
+		return nil
+	}
+	cur, err := kube.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if cur.Annotations != nil && cur.Annotations[privilegedMoversAnnotation] == "true" {
+		return nil
+	}
+	if cur.Annotations == nil {
+		cur.Annotations = map[string]string{}
+	}
+	cur.Annotations[privilegedMoversAnnotation] = "true"
+	_, err = kube.CoreV1().Namespaces().Update(ctx, cur, metav1.UpdateOptions{})
+	return err
 }
 
 func (m Mover) rcloneSpec(w classify.Workload) map[string]any {

@@ -95,3 +95,89 @@ func TestObjectStripsNodeAffinityAndStatus(t *testing.T) {
 		t.Fatal("nodeSelector must be removed")
 	}
 }
+
+func TestObjectStripsUnmappedRuntimeClass(t *testing.T) {
+	t.Parallel()
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "redis"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"runtimeClassName": "gvisor",
+					"containers":       []any{map[string]any{"name": "redis"}},
+				},
+			},
+		},
+	}}
+	Object(obj, Options{})
+	if _, found, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "runtimeClassName"); found {
+		t.Fatal("unmapped runtimeClassName must be stripped")
+	}
+}
+
+func TestObjectRemapsRuntimeClass(t *testing.T) {
+	t.Parallel()
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "app"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"runtimeClassName": "gvisor",
+					"containers":       []any{map[string]any{"name": "app"}},
+				},
+			},
+		},
+	}}
+	Object(obj, Options{RuntimeClassMap: map[string]string{"gvisor": "kata-vm-isolation"}})
+	got, found, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "runtimeClassName")
+	if !found || got != "kata-vm-isolation" {
+		t.Fatalf("runtimeClassName=%q found=%v", got, found)
+	}
+}
+
+func TestObjectStripsMappedEmptyRuntimeClass(t *testing.T) {
+	t.Parallel()
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"name": "p"},
+		"spec": map[string]any{
+			"runtimeClassName": "nvidia",
+			"containers":       []any{map[string]any{"name": "c"}},
+		},
+	}}
+	Object(obj, Options{RuntimeClassMap: map[string]string{"nvidia": ""}})
+	if _, found, _ := unstructured.NestedString(obj.Object, "spec", "runtimeClassName"); found {
+		t.Fatal("empty mapping must strip runtimeClassName")
+	}
+}
+
+func TestObjectRemapsCronJobRuntimeClass(t *testing.T) {
+	t.Parallel()
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "batch/v1",
+		"kind":       "CronJob",
+		"metadata":   map[string]any{"name": "job"},
+		"spec": map[string]any{
+			"jobTemplate": map[string]any{
+				"spec": map[string]any{
+					"template": map[string]any{
+						"spec": map[string]any{
+							"runtimeClassName": "wasmtime",
+							"containers":       []any{map[string]any{"name": "job"}},
+						},
+					},
+				},
+			},
+		},
+	}}
+	Object(obj, Options{RuntimeClassMap: map[string]string{"wasmtime": "runc"}})
+	got, found, _ := unstructured.NestedString(obj.Object, "spec", "jobTemplate", "spec", "template", "spec", "runtimeClassName")
+	if !found || got != "runc" {
+		t.Fatalf("cronjob runtimeClassName=%q found=%v", got, found)
+	}
+}

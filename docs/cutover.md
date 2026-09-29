@@ -21,12 +21,21 @@
   Stateless workloads report dest Ready only if the dest object exists and
   is Ready — they are not auto-true.
 
+`Policy.spec.replicate` syncs data and ancillary objects, not workload
+manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore
+Action (`Sanitize` renderer). Restore remaps `spec.runtimeClassName` with
+`ClusterPair.spec.runtimeClassMap`; unmapped classes are stripped so dest
+does not reject a RuntimeClass that exists only on source.
+
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`
 keeps one `replicate-<policy>` Action running. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
-`fsGroup`/`runAsUser` into `moverSecurityContext`.
+`fsGroup`/`runAsUser` into `moverSecurityContext`. Workloads that declare
+neither (marketplace images that own `pgdata` via `DAC_OVERRIDE`) get the
+namespace annotation `volsync.backube/privileged-movers=true` so VolSync
+grants that capability.
 
 `Succeeded` is only for dry-run. Dest in sync is `CatchingUp` with
 `replica lag=0; dest probed; live-sync`. Lag or dest miss stays CatchingUp

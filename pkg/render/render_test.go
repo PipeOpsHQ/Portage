@@ -116,3 +116,58 @@ func TestWebhookPostsAndSanitizes(t *testing.T) {
 		t.Fatal("webhook output must still be sanitized")
 	}
 }
+
+func TestSanitizeMapsRuntimeClassFromPair(t *testing.T) {
+	t.Parallel()
+	src := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "redis"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"runtimeClassName": "gvisor",
+					"containers":       []any{map[string]any{"name": "redis"}},
+				},
+			},
+		},
+	}}
+	pair := &portagev1alpha1.ClusterPair{Spec: portagev1alpha1.ClusterPairSpec{
+		RuntimeClassMap: map[string]string{"gvisor": "kata-vm-isolation"},
+	}}
+	out, err := Sanitize{}.Render(context.Background(), Request{Pair: pair, SourceObjects: []*unstructured.Unstructured{src}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("len=%d", len(out))
+	}
+	got, found, _ := unstructured.NestedString(out[0].Object, "spec", "template", "spec", "runtimeClassName")
+	if !found || got != "kata-vm-isolation" {
+		t.Fatalf("runtimeClassName=%q found=%v", got, found)
+	}
+}
+
+func TestSanitizeStripsUnmappedRuntimeClassFromPair(t *testing.T) {
+	t.Parallel()
+	src := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "app"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{"runtimeClassName": "gvisor"},
+			},
+		},
+	}}
+	out, err := Sanitize{}.Render(context.Background(), Request{
+		Pair:          &portagev1alpha1.ClusterPair{},
+		SourceObjects: []*unstructured.Unstructured{src},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := unstructured.NestedString(out[0].Object, "spec", "template", "spec", "runtimeClassName"); found {
+		t.Fatal("unmapped runtimeClassName must be stripped")
+	}
+}

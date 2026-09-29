@@ -132,6 +132,7 @@ func (r *ActionReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources;replicationdestinations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=portage.io,resources=policies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets;services;serviceaccounts,verbs=get;list;watch;create;update;patch
@@ -885,6 +886,7 @@ func rehydrateOpts(pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPai
 	opt := snapshots.RehydrateOptions{NeverOverwrite: true, DefaultSize: "10Gi"}
 	if pair != nil {
 		opt.Transform.StorageClassMap = pair.Spec.StorageClassMap
+		opt.Transform.RuntimeClassMap = pair.Spec.RuntimeClassMap
 	}
 	_ = pol
 	return opt

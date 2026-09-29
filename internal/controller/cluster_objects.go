@@ -56,6 +56,7 @@ func (r *ActionReconciler) transformOpt(pair *portagev1alpha1.ClusterPair) trans
 	opt := transform.Options{}
 	if pair != nil {
 		opt.StorageClassMap = pair.Spec.StorageClassMap
+		opt.RuntimeClassMap = pair.Spec.RuntimeClassMap
 	}
 	return opt
 }
