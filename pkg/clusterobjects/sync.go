@@ -98,15 +98,10 @@ func syncOne(ctx context.Context, dyn dynamic.Interface, it Item) error {
 	}
 	it.Obj.SetDeletionTimestamp(nil)
 	it.Obj.SetDeletionGracePeriodSeconds(nil)
-	_, err := r.Create(ctx, it.Obj, metav1.CreateOptions{})
+	obj := it.Obj.DeepCopy()
+	_, err := r.Create(ctx, obj, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		cur, getErr := r.Get(ctx, it.Obj.GetName(), metav1.GetOptions{})
-		if getErr != nil {
-			return fmt.Errorf("get dest %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), getErr)
-		}
-		it.Obj.SetResourceVersion(cur.GetResourceVersion())
-		it.Obj.SetUID(cur.GetUID())
-		_, err = r.Update(ctx, it.Obj, metav1.UpdateOptions{})
+		err = updateWithRetry(ctx, r, obj, 4)
 	}
 	if skipListErr(err) {
 		return nil
@@ -115,6 +110,26 @@ func syncOne(ctx context.Context, dyn dynamic.Interface, it Item) error {
 		return fmt.Errorf("sync %s/%s: %w", it.Obj.GetKind(), it.Obj.GetName(), err)
 	}
 	return nil
+}
+
+func updateWithRetry(ctx context.Context, r dynamic.ResourceInterface, obj *unstructured.Unstructured, attempts int) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		cur, getErr := r.Get(ctx, obj.GetName(), metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		obj.SetResourceVersion(cur.GetResourceVersion())
+		obj.SetUID(cur.GetUID())
+		_, err = r.Update(ctx, obj, metav1.UpdateOptions{})
+		if err == nil || skipListErr(err) {
+			return nil
+		}
+		if !errors.IsConflict(err) {
+			return err
+		}
+	}
+	return err
 }
 
 // Attest is the object-graph probe: dest Get must succeed. CRDs must be Established.

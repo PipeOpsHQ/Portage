@@ -20,6 +20,8 @@ spec:
   # clusterObjects:
   #   enabled: true          # live API graph (CM/Secret/Service/RBAC/CRDs/CRs)
   #   includeClusterScoped: true
+  #   excludeGVKs:
+  #     - backendtlspolicies.gateway.networking.k8s.io
   # replicate + cutover require a ClusterPair
   # clusterPair: cloud-a-to-cloud-b
   # replicate:

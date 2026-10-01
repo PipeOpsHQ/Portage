@@ -219,6 +219,17 @@ type ClusterObjectsSpec struct {
 	// ExcludeNamespaces is added to the built-in skip list (kube-system, …).
 	// +optional
 	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
+
+	// ExcludeGVKs skips matching CRDs and CRs. Dest admission, feature gates,
+	// and channel skew (Gateway API experimental vs standard) make some
+	// source types illegal on dest. Each entry is one of:
+	//   group/version/kind  (gateway.networking.k8s.io/v1alpha3/BackendTLSPolicy)
+	//   group/kind          (gateway.networking.k8s.io/BackendTLSPolicy)
+	//   resource            (backendtlspolicies)
+	//   CRD name            (backendtlspolicies.gateway.networking.k8s.io)
+	// Matching CRD objects are skipped too.
+	// +optional
+	ExcludeGVKs []string `json:"excludeGVKs,omitempty"`
 }
 
 // PolicyPhase is rollup health for a Policy.

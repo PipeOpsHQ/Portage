@@ -52,11 +52,11 @@ Pods, ReplicaSets, nodes, PVs, and STS/Deploy/DS stay on the workload path.
 
 Same rules as volumes:
 
-- unknown CRs stay in the graph
+- unknown CRs stay in the graph (`excludeGVKs` drops dest-illegal CRDs)
 - dest is sanitized (UID/RV/status/zone pins, SA tokens, `kube-root-ca.crt`)
 - `Succeeded` only after **dest Get** (CRDs must be `Established`)
 - Replicate is live list → create-or-update dest (active restoration). The
-  Action stays CatchingUp; it is not a one-shot Succeeded.
+  Action stays CatchingUp; it is not a one-shot Succeeded. 409 Conflict is retried.
 
 Disabled by default so workload e2e is unchanged until you opt in.
 

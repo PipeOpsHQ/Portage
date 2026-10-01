@@ -95,3 +95,34 @@ func TestEnsurePVCFromSnapshotNeverOverwritesBound(t *testing.T) {
 		t.Fatalf("done=%v err=%v", done, err)
 	}
 }
+
+func TestEnsurePVCFromSnapshotBoundKeepsVolumeName(t *testing.T) {
+	t.Parallel()
+	w := classify.Workload{Namespace: "ns", Name: "pg", Kind: "StatefulSet"}
+	existing := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "data-pg", Namespace: "ns"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			VolumeName: "pvc-3323feb5-4609-4db7-8663-58168698557e",
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("8Gi")},
+			},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+	kube := k8sfake.NewSimpleClientset(existing)
+	c := Client{}
+	done, healed, err := c.EnsurePVCFromSnapshot(context.Background(), kube, w, "data-pg", RehydrateOptions{NeverOverwrite: true})
+	if err != nil || !done {
+		t.Fatalf("done=%v err=%v", done, err)
+	}
+	if len(healed) != 0 {
+		t.Fatalf("bound dest PVC must not be healed, got %v", healed)
+	}
+	got, err := kube.CoreV1().PersistentVolumeClaims("ns").Get(context.Background(), "data-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.VolumeName != existing.Spec.VolumeName {
+		t.Fatalf("volumeName=%q", got.Spec.VolumeName)
+	}
+}

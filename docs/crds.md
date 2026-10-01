@@ -100,6 +100,9 @@ spec:
     enabled: true              # live API graph (not etcd); CRDs always
     includeClusterScoped: true # Namespaces, ClusterRoles, cluster-scoped CRs
     excludeNamespaces: []
+    excludeGVKs:
+      - backendtlspolicies.gateway.networking.k8s.io
+      - gateway.networking.k8s.io/BackendTLSPolicy
   cutover:
     trafficHook: https://hooks.example.com/portage/switch
     holdSource: 24h

@@ -220,10 +220,64 @@ func walkRuntimeClass(m map[string]any, opt Options) {
 
 func stripAffinity(obj *unstructured.Unstructured) {
 	unstructured.RemoveNestedField(obj.Object, "spec", "nodeSelector")
+	unstructured.RemoveNestedField(obj.Object, "spec", "nodeName")
 	unstructured.RemoveNestedField(obj.Object, "spec", "affinity", "nodeAffinity")
 	unstructured.RemoveNestedField(obj.Object, "spec", "template", "spec", "nodeSelector")
+	unstructured.RemoveNestedField(obj.Object, "spec", "template", "spec", "nodeName")
 	unstructured.RemoveNestedField(obj.Object, "spec", "template", "spec", "affinity", "nodeAffinity")
 	unstructured.RemoveNestedField(obj.Object, "spec", "template", "spec", "topologySpreadConstraints")
+	unstructured.RemoveNestedField(obj.Object, "spec", "jobTemplate", "spec", "template", "spec", "nodeSelector")
+	unstructured.RemoveNestedField(obj.Object, "spec", "jobTemplate", "spec", "template", "spec", "nodeName")
+	stripClusterLocalTolerations(obj.Object)
+}
+
+// RuntimeClass and node-pool taints (gvisor, kata, GPU) are source-cluster
+// scheduling. Dest VolSync movers copy dest-pod tolerations when copyMethod
+// is Direct, so leaving them on dest workloads pins movers to missing nodes.
+func stripClusterLocalTolerations(m map[string]any) {
+	if m == nil {
+		return
+	}
+	if tols, ok := m["tolerations"].([]any); ok {
+		kept := make([]any, 0, len(tols))
+		for _, t := range tols {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				kept = append(kept, t)
+				continue
+			}
+			key, _ := tm["key"].(string)
+			if clusterLocalTolerationKey(key) {
+				continue
+			}
+			kept = append(kept, t)
+		}
+		if len(kept) == 0 {
+			delete(m, "tolerations")
+		} else {
+			m["tolerations"] = kept
+		}
+	}
+	for _, v := range m {
+		switch t := v.(type) {
+		case map[string]any:
+			stripClusterLocalTolerations(t)
+		case []any:
+			for _, item := range t {
+				if nested, ok := item.(map[string]any); ok {
+					stripClusterLocalTolerations(nested)
+				}
+			}
+		}
+	}
+}
+
+func clusterLocalTolerationKey(key string) bool {
+	switch key {
+	case "sandbox.gke.io/runtime", "nvidia.com/gpu", "kubernetes.io/hostname":
+		return true
+	}
+	return strings.Contains(key, "runtimeclass") || strings.HasSuffix(key, "/runtime")
 }
 
 func hasPrefix(k string, prefixes []string) bool {

@@ -31,6 +31,7 @@ import (
 	dynfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
+	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/transform"
 )
 
@@ -46,7 +47,7 @@ func TestSyncThenAttestConfigMap(t *testing.T) {
 	})
 	dst := dynfake.NewSimpleDynamicClient(scheme)
 
-	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,12 +86,12 @@ func TestActiveReplicationUpdatesDest(t *testing.T) {
 	}
 	src := dynfake.NewSimpleDynamicClient(scheme, cm.DeepCopy())
 	dst := dynfake.NewSimpleDynamicClient(scheme)
-	items, _ := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, _ := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	_ = Sync(context.Background(), dst, Sanitize(items, transform.Options{}))
 
 	cm.Data["k"] = "v2"
 	src = dynfake.NewSimpleDynamicClient(scheme, cm)
-	items, _ = List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, _ = List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err := Sync(context.Background(), dst, Sanitize(items, transform.Options{})); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,8 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 			}},
 		},
 	}}
-	gvrs, err := Discover(disco, false)
+	off := false
+	gvrs, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{IncludeClusterScoped: &off})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 	if got["namespaces"] || got["clusterwidgets"] {
 		t.Fatalf("cluster-scoped except CRDs require IncludeClusterScoped: %v", gvrs)
 	}
-	scoped, err := Discover(disco, true)
+	scoped, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +253,7 @@ func TestForbiddenGVRSkipped(t *testing.T) {
 	src.PrependReactor("list", "secrets", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "", fmt.Errorf("no"))
 	})
-	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatalf("403 must skip, not fail: %v", err)
 	}
@@ -275,7 +277,7 @@ func TestSkipDestLocalObjects(t *testing.T) {
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{"k": []byte("v")},
 	})
-	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +326,7 @@ func TestUnknownCRStaysInGraphAndLiveSyncs(t *testing.T) {
 	lists := map[schema.GroupVersionResource]string{gvr: "WidgetList"}
 	src := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists, widget)
 	dst := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists)
-	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, nil)
+	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: true}}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +377,7 @@ func TestCRDThenCRLiveSync(t *testing.T) {
 	items, err := List(context.Background(), src, []Ref{
 		{GroupVersionResource: crdGVR, Namespaced: false},
 		{GroupVersionResource: crGVR, Namespaced: true},
-	}, []string{"ns"}, nil)
+	}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +429,7 @@ func TestSkipPortageCRDAndSystemClusterRole(t *testing.T) {
 	items, err := List(context.Background(), src, []Ref{
 		{GroupVersionResource: crdGVR, Namespaced: false},
 		{GroupVersionResource: roleGVR, Namespaced: false},
-	}, []string{"ns"}, nil)
+	}, []string{"ns"}, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +445,102 @@ func TestSkipPortageCRDAndSystemClusterRole(t *testing.T) {
 	}
 	if !got["widgets.stable.example.com"] || !got["tenant-admin"] {
 		t.Fatalf("user CRD and ClusterRole dropped: %v", got)
+	}
+}
+
+func TestDiscoverExcludeGVKs(t *testing.T) {
+	t.Parallel()
+	disco := &fakediscovery.FakeDiscovery{Fake: &clienttesting.Fake{
+		Resources: []*metav1.APIResourceList{
+			{GroupVersion: "gateway.networking.k8s.io/v1alpha3", APIResources: []metav1.APIResource{
+				{Name: "backendtlspolicies", Namespaced: true, Kind: "BackendTLSPolicy", Verbs: []string{"list", "create", "get"}},
+			}},
+			{GroupVersion: "v1", APIResources: []metav1.APIResource{
+				{Name: "configmaps", Namespaced: true, Kind: "ConfigMap", Verbs: []string{"list", "create", "get"}},
+			}},
+		},
+	}}
+	gvrs, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{
+		ExcludeGVKs: []string{"gateway.networking.k8s.io/BackendTLSPolicy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range gvrs {
+		if g.Resource == "backendtlspolicies" {
+			t.Fatal("excluded GVK must not be discovered")
+		}
+	}
+	var cm bool
+	for _, g := range gvrs {
+		if g.Resource == "configmaps" {
+			cm = true
+		}
+	}
+	if !cm {
+		t.Fatal("configmaps must stay")
+	}
+}
+
+func TestListExcludeCRDName(t *testing.T) {
+	t.Parallel()
+	crdGVR := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+	src := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		crdGVR: "CustomResourceDefinitionList",
+	},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+			"metadata": map[string]any{"name": "backendtlspolicies.gateway.networking.k8s.io"},
+			"spec":     map[string]any{"group": "gateway.networking.k8s.io", "names": map[string]any{"kind": "BackendTLSPolicy", "plural": "backendtlspolicies"}},
+		}},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+			"metadata": map[string]any{"name": "widgets.stable.example.com"},
+			"spec":     map[string]any{"group": "stable.example.com", "names": map[string]any{"kind": "Widget", "plural": "widgets"}},
+		}},
+	)
+	items, err := List(context.Background(), src, []Ref{{GroupVersionResource: crdGVR, Namespaced: false}}, nil, portagev1alpha1.ClusterObjectsSpec{
+		ExcludeGVKs: []string{"backendtlspolicies.gateway.networking.k8s.io"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Obj.GetName() != "widgets.stable.example.com" {
+		t.Fatalf("got %+v", items)
+	}
+}
+
+func TestSyncRetriesConflict(t *testing.T) {
+	t.Parallel()
+	gvr := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	dst := dynfake.NewSimpleDynamicClient(scheme, &corev1.ConfigMap{
+		TypeMeta:   metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns", ResourceVersion: "1"},
+		Data:       map[string]string{"k": "old"},
+	})
+	conflicts := 0
+	dst.PrependReactor("update", "configmaps", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		conflicts++
+		if conflicts == 1 {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, "app", fmt.Errorf("stale"))
+		}
+		return false, nil, nil
+	})
+	items := []Item{{
+		GVR: gvr, Namespaced: true,
+		Obj: &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]any{"name": "app", "namespace": "ns"},
+			"data":     map[string]any{"k": "new"},
+		}},
+	}}
+	if err := Sync(context.Background(), dst, items); err != nil {
+		t.Fatal(err)
+	}
+	if conflicts < 1 {
+		t.Fatal("expected a conflict retry")
 	}
 }
 

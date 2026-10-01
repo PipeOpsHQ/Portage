@@ -54,7 +54,17 @@ func createTyped(ctx context.Context, kube kubernetes.Interface, obj *unstructur
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &o); err != nil {
 			return err
 		}
-		_, err := kube.CoreV1().PersistentVolumeClaims(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
+		cur, err := kube.CoreV1().PersistentVolumeClaims(o.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+		if err == nil {
+			// Dest PVC already provisioned (VolSync RD, prior Restore). Spec
+			// is immutable once Bound; leave it.
+			_ = cur
+			return nil
+		}
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		_, err = kube.CoreV1().PersistentVolumeClaims(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
 		return err
 	case "ConfigMap":
 		var o corev1.ConfigMap
@@ -62,6 +72,15 @@ func createTyped(ctx context.Context, kube kubernetes.Interface, obj *unstructur
 			return err
 		}
 		_, err := kube.CoreV1().ConfigMaps(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
+		if errors.IsAlreadyExists(err) {
+			cur, getErr := kube.CoreV1().ConfigMaps(o.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			o.ResourceVersion = cur.ResourceVersion
+			o.UID = cur.UID
+			_, err = kube.CoreV1().ConfigMaps(o.Namespace).Update(ctx, &o, metav1.UpdateOptions{})
+		}
 		return err
 	case "Secret":
 		var o corev1.Secret
@@ -69,6 +88,15 @@ func createTyped(ctx context.Context, kube kubernetes.Interface, obj *unstructur
 			return err
 		}
 		_, err := kube.CoreV1().Secrets(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
+		if errors.IsAlreadyExists(err) {
+			cur, getErr := kube.CoreV1().Secrets(o.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			o.ResourceVersion = cur.ResourceVersion
+			o.UID = cur.UID
+			_, err = kube.CoreV1().Secrets(o.Namespace).Update(ctx, &o, metav1.UpdateOptions{})
+		}
 		return err
 	case "Service":
 		var o corev1.Service
@@ -83,6 +111,16 @@ func createTyped(ctx context.Context, kube kubernetes.Interface, obj *unstructur
 			return err
 		}
 		_, err := kube.AppsV1().StatefulSets(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
+		if errors.IsAlreadyExists(err) {
+			cur, getErr := kube.AppsV1().StatefulSets(o.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			o.ResourceVersion = cur.ResourceVersion
+			o.UID = cur.UID
+			o.Status = cur.Status
+			_, err = kube.AppsV1().StatefulSets(o.Namespace).Update(ctx, &o, metav1.UpdateOptions{})
+		}
 		return err
 	case "Deployment":
 		var o appsv1.Deployment
@@ -90,6 +128,16 @@ func createTyped(ctx context.Context, kube kubernetes.Interface, obj *unstructur
 			return err
 		}
 		_, err := kube.AppsV1().Deployments(o.Namespace).Create(ctx, &o, metav1.CreateOptions{})
+		if errors.IsAlreadyExists(err) {
+			cur, getErr := kube.AppsV1().Deployments(o.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			o.ResourceVersion = cur.ResourceVersion
+			o.UID = cur.UID
+			o.Status = cur.Status
+			_, err = kube.AppsV1().Deployments(o.Namespace).Update(ctx, &o, metav1.UpdateOptions{})
+		}
 		return err
 	default:
 		return nil

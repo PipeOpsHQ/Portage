@@ -135,8 +135,10 @@ Unknown is **opt-out**, never opt-in. Mover scratch is the exception.
 `pkg/transform` drops `selected-node`, zone labels, cloud LB annotations,
 `volumeName`, `clusterIP`, nodeAffinity, Velero restore labels, remaps
 StorageClass, and remaps or strips `runtimeClassName` (unmapped classes
-would fail dest admission). Applied by the Sanitize renderer and as
-defense in depth for Webhook/Git renderers.
+would fail dest admission), and strips hostname `nodeSelector` plus
+RuntimeClass taints (`sandbox.gke.io/runtime`). Applied by the Sanitize
+renderer and as defense in depth for Webhook/Git renderers. Restore leaves
+Bound dest PVCs alone and updates existing dest STS/Deploy.
 
 StatefulSet restore **must** bind the restored PVC by name before the STS is
 started. `volumeClaimTemplates` creating a sibling empty claim is a failed

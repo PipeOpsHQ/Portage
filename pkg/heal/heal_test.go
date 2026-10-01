@@ -56,6 +56,19 @@ func TestPVCStripsSelectedNodeAndRemapsSC(t *testing.T) {
 	}
 }
 
+func TestPVCBoundKeepsVolumeName(t *testing.T) {
+	t.Parallel()
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "data-pg"},
+		Spec:       corev1.PersistentVolumeClaimSpec{VolumeName: "pvc-live"},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+	PVC(pvc, transform.Options{})
+	if pvc.Spec.VolumeName != "pvc-live" {
+		t.Fatalf("bound volumeName=%q", pvc.Spec.VolumeName)
+	}
+}
+
 func TestPodSpecStripsZonePin(t *testing.T) {
 	t.Parallel()
 	spec := &corev1.PodSpec{

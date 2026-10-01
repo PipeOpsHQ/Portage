@@ -77,6 +77,14 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	if destPVC != "data-pg" {
 		t.Fatalf("dest destinationPVC=%q", destPVC)
 	}
+	tols, found, _ := unstructured.NestedSlice(dst.Object, "spec", "restic", "moverTolerations")
+	if !found || tols == nil {
+		t.Fatal("dest restic must set empty moverTolerations so Direct copy does not inherit source gvisor/hostname pins")
+	}
+	srcTols, srcFound, _ := unstructured.NestedSlice(src.Object, "spec", "restic", "moverTolerations")
+	if srcFound && srcTols != nil {
+		t.Fatal("source restic must keep VolSync's AffinityFromVolume (RWO on source node)")
+	}
 }
 
 func TestReplicateObjectStoreRcloneOverride(t *testing.T) {

@@ -181,3 +181,38 @@ func TestObjectRemapsCronJobRuntimeClass(t *testing.T) {
 		t.Fatalf("cronjob runtimeClassName=%q found=%v", got, found)
 	}
 }
+
+func TestObjectStripsHostnameAndGvisorToleration(t *testing.T) {
+	t.Parallel()
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "app"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"nodeSelector": map[string]any{"kubernetes.io/hostname": "aks-doks-compat-chmfz"},
+					"tolerations": []any{
+						map[string]any{"key": "sandbox.gke.io/runtime", "value": "gvisor"},
+						map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists"},
+					},
+					"containers": []any{map[string]any{"name": "app"}},
+				},
+			},
+		},
+	}}
+	Object(obj, Options{})
+	if _, found, _ := unstructured.NestedFieldNoCopy(obj.Object, "spec", "template", "spec", "nodeSelector"); found {
+		t.Fatal("hostname nodeSelector must be stripped")
+	}
+	tols, found, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "tolerations")
+	if !found {
+		t.Fatal("generic not-ready toleration must remain")
+	}
+	for _, toli := range tols {
+		m := toli.(map[string]any)
+		if m["key"] == "sandbox.gke.io/runtime" {
+			t.Fatal("gvisor toleration must be stripped")
+		}
+	}
+}

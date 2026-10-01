@@ -49,17 +49,20 @@ func (c Client) EnsurePVCFromSnapshot(ctx context.Context, kube kubernetes.Inter
 	}
 	pvc, err := kube.CoreV1().PersistentVolumeClaims(w.Namespace).Get(ctx, pvcName, metav1.GetOptions{})
 	if err == nil {
+		// Bound dest claims (VolSync ReplicationDestination, prior Restore)
+		// already have a live PV. Clearing volumeName / remapping StorageClass
+		// is rejected as an immutable spec change.
+		if pvc.Status.Phase == corev1.ClaimBound {
+			return true, nil, nil
+		}
+		if pvc.Status.Phase == corev1.ClaimPending {
+			return false, nil, nil
+		}
 		healed = heal.PVC(pvc, opt.Transform)
 		if len(healed) > 0 {
 			if _, uerr := kube.CoreV1().PersistentVolumeClaims(w.Namespace).Update(ctx, pvc, metav1.UpdateOptions{}); uerr != nil {
 				return false, healed, uerr
 			}
-		}
-		if pvc.Status.Phase == corev1.ClaimBound && opt.NeverOverwrite {
-			return true, healed, nil
-		}
-		if pvc.Status.Phase == corev1.ClaimBound || pvc.Status.Phase == corev1.ClaimPending {
-			return pvc.Status.Phase == corev1.ClaimBound, healed, nil
 		}
 		return false, healed, nil
 	}

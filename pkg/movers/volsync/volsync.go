@@ -280,7 +280,9 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 		// live-sync hole: source keeps snapshotting, dest never applies.
 		spec["trigger"] = m.trigger()
 		if m.ObjectMover == "rclone" {
-			spec["rclone"] = m.rcloneSpec(w)
+			rc := m.rcloneSpec(w)
+			stripDestMoverScheduling(rc)
+			spec["rclone"] = rc
 		} else {
 			spec["restic"] = m.destResticSpec(w)
 		}
@@ -289,6 +291,7 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 			"serviceType": "LoadBalancer",
 			"keySecret":   tlsSecretName,
 		}
+		stripDestMoverScheduling(spec["rsyncTLS"].(map[string]any))
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "volsync.backube/v1alpha1",
@@ -341,6 +344,7 @@ func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	if sc := moverSecurityContext(w); sc != nil {
 		spec["moverSecurityContext"] = sc
 	}
+	stripDestMoverScheduling(spec)
 	return spec
 }
 
@@ -384,6 +388,16 @@ func enablePrivilegedMovers(ctx context.Context, kube kubernetes.Interface, ns s
 	cur.Annotations[privilegedMoversAnnotation] = "true"
 	_, err = kube.CoreV1().Namespaces().Update(ctx, cur, metav1.UpdateOptions{})
 	return err
+}
+
+// stripDestMoverScheduling clears dest-side VolSync mover tolerations.
+// Direct copyMethod copies dest-pod nodeSelector/tolerations onto the mover;
+// source-cluster pins (gvisor RuntimeClass, hostname) then fail dest scheduling.
+func stripDestMoverScheduling(spec map[string]any) {
+	if spec == nil {
+		return
+	}
+	spec["moverTolerations"] = []any{}
 }
 
 func (m Mover) rcloneSpec(w classify.Workload) map[string]any {

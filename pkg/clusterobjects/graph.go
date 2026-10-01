@@ -121,11 +121,11 @@ func Is(w classify.Workload) bool {
 
 // Capture is Discover + List + Sanitize. This is the live-replication read.
 func Capture(ctx context.Context, d discovery.DiscoveryInterface, dyn dynamic.Interface, spec portagev1alpha1.ClusterObjectsSpec, namespaces []string, opt transform.Options) ([]Item, error) {
-	gvrs, err := Discover(d, includeClusterScoped(spec))
+	gvrs, err := Discover(d, spec)
 	if err != nil {
 		return nil, err
 	}
-	items, err := List(ctx, dyn, gvrs, namespaces, spec.ExcludeNamespaces)
+	items, err := List(ctx, dyn, gvrs, namespaces, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -140,12 +140,14 @@ func includeClusterScoped(spec portagev1alpha1.ClusterObjectsSpec) bool {
 }
 
 // Discover preferred GVRs, minus ephemeral/cluster-local kinds.
-// CRDs are always included (unknown CRs cannot restore without them).
-// Other cluster-scoped APIs follow clusterScoped (default on).
-func Discover(d discovery.DiscoveryInterface, clusterScoped bool) ([]Ref, error) {
+// CRDs are always included (unknown CRs cannot restore without them)
+// unless listed in spec.excludeGVKs. Other cluster-scoped APIs follow
+// includeClusterScoped (default on).
+func Discover(d discovery.DiscoveryInterface, spec portagev1alpha1.ClusterObjectsSpec) ([]Ref, error) {
 	if d == nil {
 		return nil, fmt.Errorf("clusterobjects: discovery client required")
 	}
+	clusterScoped := includeClusterScoped(spec)
 	lists, err := d.ServerPreferredResources()
 	if len(lists) == 0 {
 		// FakeDiscovery and partial aggregated APIs leave preferred empty.
@@ -184,11 +186,15 @@ func Discover(d discovery.DiscoveryInterface, clusterScoped bool) ([]Ref, error)
 			if !strings.Contains(verbs, "list") || !strings.Contains(verbs, "create") {
 				continue
 			}
-			seen[key] = struct{}{}
-			out = append(out, Ref{
+			ref := Ref{
 				GroupVersionResource: schema.GroupVersionResource{Group: gv.Group, Version: gv.Version, Resource: r.Name},
 				Namespaced:           r.Namespaced,
-			})
+			}
+			if excludedGVR(ref, r.Kind, spec.ExcludeGVKs) {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, ref)
 		}
 	}
 	return out, nil
@@ -197,7 +203,7 @@ func Discover(d discovery.DiscoveryInterface, clusterScoped bool) ([]Ref, error)
 // List copies objects from source. Forbidden GVRs are skipped (unknown we
 // cannot see is logged by the caller as missing, not silently dropped from
 // a GVR we could list).
-func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []string, extraSkip []string) ([]Item, error) {
+func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []string, spec portagev1alpha1.ClusterObjectsSpec) ([]Item, error) {
 	if dyn == nil {
 		return nil, fmt.Errorf("clusterobjects: dynamic client required")
 	}
@@ -205,7 +211,7 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 	for k := range skipNS {
 		skip[k] = struct{}{}
 	}
-	for _, n := range extraSkip {
+	for _, n := range spec.ExcludeNamespaces {
 		skip[n] = struct{}{}
 	}
 	var out []Item
@@ -229,7 +235,7 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 						continue
 					}
 				}
-				if skipObj(gvr, &obj) {
+				if skipObj(gvr, &obj, spec.ExcludeGVKs) {
 					continue
 				}
 				out = append(out, Item{GVR: gvr, Namespaced: false, Obj: obj.DeepCopy(), Deleting: isDeleting(&obj)})
@@ -248,7 +254,7 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 				return nil, fmt.Errorf("list %s %s: %w", ns, gvr.String(), err)
 			}
 			for i := range list.Items {
-				if skipObj(gvr, &list.Items[i]) {
+				if skipObj(gvr, &list.Items[i], spec.ExcludeGVKs) {
 					continue
 				}
 				out = append(out, Item{GVR: gvr, Namespaced: true, Obj: list.Items[i].DeepCopy(), Deleting: isDeleting(&list.Items[i])})
@@ -262,8 +268,11 @@ func skipListErr(err error) bool {
 	return err != nil && (errors.IsForbidden(err) || errors.IsNotFound(err) || errors.IsMethodNotSupported(err))
 }
 
-func skipObj(gvr schema.GroupVersionResource, obj *unstructured.Unstructured) bool {
+func skipObj(gvr schema.GroupVersionResource, obj *unstructured.Unstructured, exclude []string) bool {
 	if obj == nil {
+		return true
+	}
+	if excludedObj(gvr, obj, exclude) {
 		return true
 	}
 	if obj.GetName() == "kube-root-ca.crt" {

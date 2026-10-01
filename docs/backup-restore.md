@@ -26,7 +26,8 @@ kubectl -n tenant-a get action backup-1 -w
 1. Preflight: refuse if any stateful artifact is not useful.
 2. Export source objects, render dest (`Sanitize`, `Git`, or `Webhook`; always
    sanitized after). `runtimeClassName` is remapped via
-   `ClusterPair.spec.runtimeClassMap` or stripped when unmapped.
+   `ClusterPair.spec.runtimeClassMap` or stripped when unmapped. Bound dest
+   PVCs (live Replicate) are left; existing dest STS/Deploy are updated.
 3. Apply to **dest** (PVC first, then STS/Deploy) using the ClusterPair dest
    client (kubeconfig or cloud identity) — not the hub cache.
 4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql`
@@ -51,11 +52,15 @@ etcd backup. The Kubernetes API is the data plane:
    It does not Succeeded and stop.
 
 **CRDs are always in the graph** when this is enabled — unknown CRs cannot
-restore without them. Other cluster-scoped APIs (Namespaces in the selector,
+restore without them — unless listed in `excludeGVKs` (CRD name, resource,
+`group/kind`, or `group/version/kind`). Dest admission, Gateway API
+experimental-vs-standard channel, and version skew are the usual reasons.
+Other cluster-scoped APIs (Namespaces in the selector,
 ClusterRoles/Bindings, ClusterIssuers, …) are included by default
 (`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,
 CapsuleConfiguration, VolSync CRs, admission webhooks, and `system:` RBAC stay
 dest-local. Source objects with `deletionTimestamp` are Deleted on dest.
+Dest Update retries 409 Conflict.
 
 STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 `403` list is skipped (not silently dropped from a GVR we could read).

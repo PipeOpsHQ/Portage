@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- `Policy.spec.clusterObjects.excludeGVKs` skips matching CRDs and CRs
+  (Gateway API experimental channel, dest admission, version skew).
+
 ### Fixed
 
+- Restore no longer patches Bound dest PVCs (VolSync already provisioned
+  them). Clearing `spec.volumeName` was rejected as immutable and failed
+  preflight whenever Replicate was already running.
+- Restore updates existing dest StatefulSet/Deployment specs so
+  RuntimeClass / nodeSelector sanitization actually lands.
+- Dest VolSync restic/rclone/rsyncTLS sets empty `moverTolerations`;
+  Sanitize strips hostname nodeSelector and gvisor RuntimeClass
+  tolerations so Direct movers are not pinned to source-only nodes.
+- Cluster-object sync retries dest Update on 409 Conflict (stale
+  resourceVersion) instead of failing the CRD pass.
 - Sanitize maps `spec.runtimeClassName` via `ClusterPair.spec.runtimeClassMap`
   (pod, workload template, CronJob). Unmapped classes are stripped so dest
   admission does not reject gvisor/kata/WASM/nvidia that exist only on source.

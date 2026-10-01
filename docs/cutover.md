@@ -20,6 +20,9 @@
   `<template>-<sts>-<ordinal>`, not the volumeClaimTemplate name.
   Stateless workloads report dest Ready only if the dest object exists and
   is Ready — they are not auto-true.
+  Restore against a dest that Replicate already Bound skips re-applying PVC
+  spec (`volumeName` is immutable). Dest VolSync movers do not inherit
+  source hostname nodeSelector / gvisor RuntimeClass tolerations.
 
 `Policy.spec.replicate` syncs data and ancillary objects, not workload
 manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore

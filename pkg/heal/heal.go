@@ -52,6 +52,16 @@ func PVC(pvc *corev1.PersistentVolumeClaim, opt transform.Options) []string {
 	if pvc.Spec.StorageClassName != nil {
 		oldSC = *pvc.Spec.StorageClassName
 	}
+	if pvc.Status.Phase == corev1.ClaimBound {
+		// Bound dest claims (VolSync) cannot have spec.volumeName cleared.
+		if pvc.Annotations != nil {
+			delete(pvc.Annotations, "volume.kubernetes.io/selected-node")
+		}
+		if pvc.Labels != nil {
+			delete(pvc.Labels, "topology.kubernetes.io/zone")
+		}
+		return unique(out)
+	}
 	phase := pvc.Status.Phase
 	transform.PVC(pvc, opt)
 	pvc.Status.Phase = phase
@@ -74,12 +84,44 @@ func PodSpec(spec *corev1.PodSpec) []string {
 		spec.NodeSelector = nil
 		out = append(out, StripNodeAffinity)
 	}
+	if spec.NodeName != "" {
+		spec.NodeName = ""
+		out = append(out, StripNodeAffinity)
+	}
 	if spec.Affinity != nil && spec.Affinity.NodeAffinity != nil {
 		spec.Affinity.NodeAffinity = nil
 		out = append(out, StripNodeAffinity)
 	}
 	spec.TopologySpreadConstraints = nil
+	if n := filterPodTolerations(spec); n > 0 {
+		out = append(out, StripNodeAffinity)
+	}
 	return unique(out)
+}
+
+func filterPodTolerations(spec *corev1.PodSpec) int {
+	if spec == nil || len(spec.Tolerations) == 0 {
+		return 0
+	}
+	kept := spec.Tolerations[:0]
+	dropped := 0
+	for _, t := range spec.Tolerations {
+		if clusterLocalTol(t.Key) {
+			dropped++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	spec.Tolerations = kept
+	return dropped
+}
+
+func clusterLocalTol(key string) bool {
+	switch key {
+	case "sandbox.gke.io/runtime", "nvidia.com/gpu", "kubernetes.io/hostname":
+		return true
+	}
+	return false
 }
 
 func unique(in []string) []string {
