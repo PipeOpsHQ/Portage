@@ -17,6 +17,7 @@ limitations under the License.
 package restore
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +43,47 @@ func TestPreflightFailsWithoutUsefulArtifact(t *testing.T) {
 	})
 	if got.Phase != portagev1alpha1.ActionPhaseFailed {
 		t.Fatalf("phase=%s want Failed (%s)", got.Phase, got.Message)
+	}
+}
+
+func TestPreflightRestoresStatelessWhenOnePVCLacksArtifact(t *testing.T) {
+	t.Parallel()
+	inv := []classify.Workload{
+		{Namespace: "ns", Kind: "Deployment", Name: "web", Class: portagev1alpha1.ClassStateless},
+		{Namespace: "ns", Kind: "PersistentVolumeClaim", Name: "lone", Class: portagev1alpha1.ClassGenericPVC},
+	}
+	got := Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhasePreflight}, Facts{
+		Inventory:     inv,
+		Useful:        map[string]bool{"ns/PersistentVolumeClaim/lone": false},
+		UsefulMessage: map[string]string{"ns/PersistentVolumeClaim/lone": "no useful volume artifact"},
+		Now:           time.Now(),
+	})
+	if got.Phase == portagev1alpha1.ActionPhaseFailed {
+		t.Fatalf("stateless must not be blocked by a missing PVC artifact: %s", got.Message)
+	}
+	if got.Phase != portagev1alpha1.ActionPhaseRehydrating {
+		t.Fatalf("phase=%s want Rehydrating (%s)", got.Phase, got.Message)
+	}
+	var skipped bool
+	for _, w := range got.Workloads {
+		if w.Key == "ns/PersistentVolumeClaim/lone" && strings.HasPrefix(w.Message, "skipped:") {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Fatalf("missing PVC must be reported skipped: %+v", got.Workloads)
+	}
+
+	got = Advance(portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhaseRehydrating, Workloads: got.Workloads}, Facts{
+		Inventory:     inv,
+		Useful:        map[string]bool{"ns/PersistentVolumeClaim/lone": false},
+		UsefulMessage: map[string]string{"ns/PersistentVolumeClaim/lone": "skipped: no useful volume artifact"},
+		Rehydrated:    map[string]bool{"ns/Deployment/web": true},
+		Ready:         map[string]bool{"ns/Deployment/web": true},
+		Now:           time.Now(),
+	})
+	if got.Phase != portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatalf("phase=%s want Succeeded (%s)", got.Phase, got.Message)
 	}
 }
 

@@ -23,8 +23,11 @@ and call it a Postgres backup.
 
 A restic/CSI/Velero job that finished is not a backup. Logical engines
 (Postgres, MySQL, Redis, …) are judged on the **dump**, not live PGDATA `du`.
-Empty Postgres datadir is tens of MiB and still fails. CSI `ReadyToUse` alone
-does **not** pass Postgres. Generic PVCs may use snapshot size / `ReadyToUse`.
+Dumps use the image environment (`POSTGRES_USER`/`POSTGRES_DB`,
+`REDIS_PASSWORD`). Empty Postgres datadir is tens of MiB and still fails.
+CSI `ReadyToUse` alone does **not** pass Postgres. Generic PVCs take size
+from VolSync restic (`lastSyncTime` / bytes processed), then snapshot
+size / `ReadyToUse`.
 
 `Policy.status.backupHealthy` is false until every stateful workload has a
 useful artifact (≥ 64 KiB dump). Portable copies live in the object store
@@ -52,7 +55,8 @@ Pods, ReplicaSets, nodes, PVs, and STS/Deploy/DS stay on the workload path.
 
 Same rules as volumes:
 
-- unknown CRs stay in the graph (`excludeGVKs` drops dest-illegal CRDs)
+- unknown CRs stay in the graph (`excludeGVKs` drops dest-illegal CRDs;
+  CRD name, resource, `group/kind`, and `group/version/kind` all match)
 - dest is sanitized (UID/RV/status/zone pins, SA tokens, `kube-root-ca.crt`)
 - `Succeeded` only after **dest Get** (CRDs must be `Established`)
 - Replicate is live list → create-or-update dest (active restoration). The

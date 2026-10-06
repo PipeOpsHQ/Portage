@@ -103,6 +103,8 @@ spec:
     excludeGVKs:
       - backendtlspolicies.gateway.networking.k8s.io
       - gateway.networking.k8s.io/BackendTLSPolicy
+      - gateway.networking.k8s.io/GatewayClass
+      - gatewayclasses
   cutover:
     trafficHook: https://hooks.example.com/portage/switch
     holdSource: 24h

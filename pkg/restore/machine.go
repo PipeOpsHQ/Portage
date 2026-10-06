@@ -22,6 +22,7 @@ limitations under the License.
 package restore
 
 import (
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -160,17 +161,29 @@ func preflight(workloads []portagev1alpha1.WorkloadActionStatus, facts Facts) st
 	if len(workloads) == 0 {
 		return "no workloads in inventory"
 	}
-	for _, w := range workloads {
+	restorable := 0
+	for i := range workloads {
+		w := &workloads[i]
 		if w.Class == portagev1alpha1.ClassStateless {
+			restorable++
 			continue
 		}
-		if !facts.Useful[w.Key] {
-			msg := facts.UsefulMessage[w.Key]
-			if msg == "" {
-				msg = "no useful artifact"
-			}
-			return w.Key + ": " + msg
+		if facts.Useful[w.Key] {
+			restorable++
+			continue
 		}
+		msg := facts.UsefulMessage[w.Key]
+		if msg == "" {
+			msg = "no useful artifact"
+		}
+		if !strings.HasPrefix(msg, "skipped:") {
+			msg = "skipped: " + msg
+		}
+		w.Message = msg
+		facts.UsefulMessage[w.Key] = msg
+	}
+	if restorable == 0 {
+		return "no restorable workloads"
 	}
 	return ""
 }
@@ -228,6 +241,9 @@ func applyFacts(workloads []portagev1alpha1.WorkloadActionStatus, facts Facts) {
 
 func waiting(workloads []portagev1alpha1.WorkloadActionStatus, ok func(portagev1alpha1.WorkloadActionStatus) bool) string {
 	for _, w := range workloads {
+		if actionphase.Skipped(w) {
+			continue
+		}
 		if !ok(w) {
 			return w.Key
 		}

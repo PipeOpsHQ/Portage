@@ -225,9 +225,10 @@ type ClusterObjectsSpec struct {
 	// source types illegal on dest. Each entry is one of:
 	//   group/version/kind  (gateway.networking.k8s.io/v1alpha3/BackendTLSPolicy)
 	//   group/kind          (gateway.networking.k8s.io/BackendTLSPolicy)
-	//   resource            (backendtlspolicies)
+	//   group/kind          (gateway.networking.k8s.io/GatewayClass)
+	//   resource            (backendtlspolicies, gatewayclasses)
 	//   CRD name            (backendtlspolicies.gateway.networking.k8s.io)
-	// Matching CRD objects are skipped too.
+	// All four forms match both the CRD object and its instances.
 	// +optional
 	ExcludeGVKs []string `json:"excludeGVKs,omitempty"`
 }

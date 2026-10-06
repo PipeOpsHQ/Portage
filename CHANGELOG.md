@@ -9,6 +9,23 @@
 
 ### Fixed
 
+- Logical dumps read `POSTGRES_USER`/`POSTGRES_DB` and `REDIS_PASSWORD`
+  from the container environment (marketplace images do not use the
+  engine defaults). Redis dumps to a temp file then stdout so
+  `redis-cli --rdb /dev/stdout` fsync-on-pipe no longer fails a successful
+  transfer.
+- Generic PVC Backup uses the VolSync restic ReplicationSource (bytes
+  processed / `lastSyncTime`) instead of returning "volsync is replicate,
+  not backup" and depending on CSI snapshots or a live pod.
+- Restore preflight skips a workload that lacks a useful artifact and
+  restores the rest of the namespace; the Action fails only when nothing
+  is restorable.
+- `excludeGVKs` CRD-name, `group/kind`, `group/version/kind`, and resource
+  forms all match the CRD object and its instances (including empty
+  discovery Kind and GatewayClass → gatewayclasses).
+- Dest Replicate strips source `kubernetes.io/hostname` pins from dest
+  STS/Deploy/DS and deletes dest VolSync mover Jobs pinned to a hostname
+  that does not exist on dest. Probe reports the pin if it is re-injected.
 - Restore no longer patches Bound dest PVCs (VolSync already provisioned
   them). Clearing `spec.volumeName` was rejected as immutable and failed
   preflight whenever Replicate was already running.

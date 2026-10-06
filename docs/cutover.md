@@ -21,8 +21,10 @@
   Stateless workloads report dest Ready only if the dest object exists and
   is Ready — they are not auto-true.
   Restore against a dest that Replicate already Bound skips re-applying PVC
-  spec (`volumeName` is immutable). Dest VolSync movers do not inherit
-  source hostname nodeSelector / gvisor RuntimeClass tolerations.
+  spec (`volumeName` is immutable). Dest VolSync Direct movers copy
+  dest-pod scheduling; Replicate strips dest STS/Deploy hostname
+  `nodeSelector` and deletes dest mover Jobs pinned to a hostname that is
+  not a dest node, then reports that pin on Probe if it comes back.
 
 `Policy.spec.replicate` syncs data and ancillary objects, not workload
 manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore

@@ -107,7 +107,28 @@ func (m Mover) Discover(_ context.Context, w classify.Workload) (movers.Capabili
 }
 
 func (m Mover) Backup(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) (movers.Artifact, error) {
-	return movers.Artifact{Mover: m.Name(), Message: "volsync is replicate, not backup"}, nil
+	if m.Dynamic == nil {
+		return movers.Artifact{Mover: m.Name(), Message: "volsync: dynamic client required"}, fmt.Errorf("volsync: dynamic client required")
+	}
+	pvc := firstDataPVC(w.PVCNames)
+	if pvc == "" {
+		return movers.Artifact{Mover: m.Name(), Message: "no pvc"}, nil
+	}
+	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, m.objectPath(w)); err != nil {
+		return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync source secrets: %w", err)
+	}
+	if needsPrivilegedMover(w) {
+		if err := enablePrivilegedMovers(ctx, m.Kube, w.Namespace); err != nil {
+			return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync privileged movers: %w", err)
+		}
+	}
+	name := "portage-" + w.Name
+	src := m.source(w, name, pvc)
+	_, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Create(ctx, src, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync source: %w", err)
+	}
+	return m.artifactFromSource(ctx, w, name)
 }
 
 func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.ClusterHandle) error {
@@ -146,6 +167,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 				return err
 			}
 		}
+		m.stripDestScheduling(ctx, w.Namespace)
 	}
 	pvc := w.PVCNames[0]
 	if isScratchPVC(pvc) {
@@ -209,6 +231,9 @@ func (m Mover) Promote(context.Context, classify.Workload, movers.ClusterHandle)
 	return nil
 }
 func (m Mover) Probe(ctx context.Context, w classify.Workload, _ movers.ClusterHandle) (movers.ProbeResult, error) {
+	if pin := m.destMoverPinMessage(ctx, w.Namespace); pin != "" {
+		return movers.ProbeResult{OK: false, Message: pin}, nil
+	}
 	ok, err := m.LagZero(ctx, w)
 	if err != nil {
 		return movers.ProbeResult{OK: false, Message: err.Error()}, err
@@ -445,4 +470,13 @@ func (m Mover) schedule() string {
 
 func isScratchPVC(name string) bool {
 	return strings.HasPrefix(name, "volsync-src-") || strings.HasPrefix(name, "volsync-dst-")
+}
+
+func firstDataPVC(names []string) string {
+	for _, n := range names {
+		if n != "" && !isScratchPVC(n) {
+			return n
+		}
+	}
+	return ""
 }

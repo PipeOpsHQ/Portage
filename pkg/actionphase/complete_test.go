@@ -66,6 +66,21 @@ func TestCanSucceed(t *testing.T) {
 			}},
 			ok: true,
 		},
+		{
+			name: "skipped pvc does not block stateless",
+			in: []portagev1alpha1.WorkloadActionStatus{
+				{Name: "web", Class: portagev1alpha1.ClassStateless, Ready: true},
+				{Name: "lone", Key: "ns/PersistentVolumeClaim/lone", Class: portagev1alpha1.ClassGenericPVC, Message: "skipped: no useful volume artifact"},
+			},
+			ok: true,
+		},
+		{
+			name: "all skipped",
+			in: []portagev1alpha1.WorkloadActionStatus{{
+				Name: "lone", Class: portagev1alpha1.ClassGenericPVC, Message: "skipped: no useful volume artifact",
+			}},
+			ok: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

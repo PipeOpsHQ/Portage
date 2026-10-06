@@ -288,6 +288,18 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 				continue
 			}
 		}
+		if len(dump.Command(w.Engine)) == 0 {
+			m, cap, err := reg.Select(ctx, w, "")
+			if err == nil && m != nil && cap.Backup {
+				art, berr := m.Backup(ctx, w, movers.ClusterHandle{Name: destName(pair)})
+				if berr != nil {
+					arts = append(arts, backup.FromArtifact(w, false, 0, berr.Error(), ""))
+					continue
+				}
+				arts = append(arts, backup.FromArtifact(w, art.Useful, art.SizeBytes, art.Message, art.ID))
+				continue
+			}
+		}
 		_, _ = snaps.CreateForWorkload(ctx, w, "", r.now())
 		ready, snapName, _ := snaps.LatestReady(ctx, w)
 		size := int64(0)
@@ -329,6 +341,21 @@ func (r *ActionReconciler) runBackup(ctx context.Context, _ *portagev1alpha1.Act
 	}
 	if err := r.writePolicyArtifacts(ctx, pol, inv, arts); err != nil {
 		return restore.Result{}, err
+	}
+	for _, a := range arts {
+		if strings.Contains(a.Message, "waiting for lastSyncTime") || strings.Contains(a.Message, "waiting for ReplicationSource") {
+			br := backup.Advance(portagev1alpha1.ActionStatus{}, backup.Facts{
+				Inventory: inv.Workloads,
+				Artifacts: arts,
+				Now:       r.now(),
+			})
+			return restore.Result{
+				Phase:        portagev1alpha1.ActionPhaseCatchingUp,
+				Message:      a.Workload + ": " + a.Message,
+				Workloads:    br.Workloads,
+				RequeueAfter: 15 * time.Second,
+			}, nil
+		}
 	}
 	br := backup.Advance(portagev1alpha1.ActionStatus{}, backup.Facts{
 		Inventory: inv.Workloads,
@@ -390,6 +417,18 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 		}
 		if w.Class == portagev1alpha1.ClassStateless {
 			facts.Useful[w.Key()] = true
+			facts.Rehydrated[w.Key()] = true
+			continue
+		}
+		if !facts.Useful[w.Key()] {
+			msg := facts.UsefulMessage[w.Key()]
+			if msg == "" {
+				msg = "no useful artifact"
+			}
+			if !strings.HasPrefix(msg, "skipped:") {
+				msg = "skipped: " + msg
+			}
+			facts.UsefulMessage[w.Key()] = msg
 			facts.Rehydrated[w.Key()] = true
 			continue
 		}

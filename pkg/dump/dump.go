@@ -33,16 +33,18 @@ import (
 )
 
 // Command is the in-pod dump (stdout). Empty means this engine is FS/CSI only.
+// Credentials come from the container environment (PipeOps marketplace images
+// set POSTGRES_USER/POSTGRES_DB and REDIS_PASSWORD, not the engine defaults).
 func Command(engine string) []string {
 	switch engine {
 	case "postgres", "timescale":
-		return []string{"/bin/sh", "-c", `pg_dump -U postgres --no-owner --no-acl postgres`}
+		return []string{"/bin/sh", "-c", postgresDumpScript}
 	case "mysql", "mariadb":
-		return []string{"/bin/sh", "-c", `mysqldump --all-databases --single-transaction`}
+		return []string{"/bin/sh", "-c", mysqlDumpScript}
 	case "mongo":
-		return []string{"/bin/sh", "-c", `mongodump --archive --gzip`}
+		return []string{"/bin/sh", "-c", mongoDumpScript}
 	case "redis", "valkey", "keydb", "dragonfly":
-		return []string{"/bin/sh", "-c", `redis-cli --rdb /dev/stdout`}
+		return []string{"/bin/sh", "-c", redisDumpScript}
 	default:
 		return nil
 	}
@@ -52,15 +54,38 @@ func Command(engine string) []string {
 func RestoreCommand(engine string) []string {
 	switch engine {
 	case "postgres", "timescale":
-		return []string{"/bin/sh", "-c", `psql -U postgres -d postgres -v ON_ERROR_STOP=1`}
+		return []string{"/bin/sh", "-c", postgresRestoreScript}
 	case "mysql", "mariadb":
-		return []string{"/bin/sh", "-c", `mysql`}
+		return []string{"/bin/sh", "-c", mysqlRestoreScript}
 	case "mongo":
 		return []string{"/bin/sh", "-c", `mongorestore --archive --gzip`}
 	default:
 		return nil
 	}
 }
+
+// Marketplace images set POSTGRES_USER / POSTGRES_DB (often not "postgres").
+const postgresDumpScript = `pg_dump -U "${POSTGRES_USER:-postgres}" --no-owner --no-acl "${POSTGRES_DB:-postgres}"`
+
+const postgresRestoreScript = `psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-postgres}" -v ON_ERROR_STOP=1`
+
+const mysqlDumpScript = `export MYSQL_PWD="${MYSQL_PASSWORD:-${MYSQL_PWD:-}}"
+mysqldump -u "${MYSQL_USER:-root}" --all-databases --single-transaction`
+
+const mysqlRestoreScript = `export MYSQL_PWD="${MYSQL_PASSWORD:-${MYSQL_PWD:-}}"
+mysql -u "${MYSQL_USER:-root}"`
+
+const mongoDumpScript = `mongodump --archive --gzip ${MONGO_INITDB_ROOT_USERNAME:+-u "$MONGO_INITDB_ROOT_USERNAME"} ${MONGO_INITDB_ROOT_PASSWORD:+-p "$MONGO_INITDB_ROOT_PASSWORD"} --authenticationDatabase "${MONGO_INITDB_DATABASE:-admin}"`
+
+// redis-cli --rdb /dev/stdout transfers the RDB then fsyncs the pipe and
+// exits 1 ("Fail to fsync '/dev/stdout': Invalid argument"). Write a file,
+// stream it, and use the file dump's exit code.
+const redisDumpScript = `f=/tmp/portage-rdb-$$
+REDISCLI_AUTH="${REDIS_PASSWORD:-${REDISCLI_AUTH:-}}" redis-cli --rdb "$f"
+e=$?
+if [ "$e" -eq 0 ]; then cat "$f"; fi
+rm -f "$f"
+exit "$e"`
 
 // Capture execs dump on source and stores it. Returns key, size, useful.
 func Capture(ctx context.Context, kube kubernetes.Interface, exec kubeexec.Interface, store objectstore.Store, w classify.Workload, now time.Time) (key string, size int64, useful bool, err error) {

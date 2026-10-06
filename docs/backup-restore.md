@@ -3,8 +3,14 @@
 ## Backup
 
 1. Classify source workloads.
-2. Exec logical dump (`pg_dump` of the engine database, `mysqldump`, …). Postgres
-   is **not** judged on live PGDATA size.
+2. Exec logical dump (`pg_dump` of the engine database, `mysqldump`, …).
+   Commands read the container environment (`POSTGRES_USER`/`POSTGRES_DB`,
+   `REDIS_PASSWORD`) so marketplace images dump. Redis writes a temp RDB
+   then cats it — `redis-cli --rdb /dev/stdout` exits 1 after a successful
+   transfer because it fsyncs the pipe. Postgres is **not** judged on live
+   PGDATA size. Generic PVCs (no dump command, no pod, no CSI snapshot)
+   take size from the VolSync restic ReplicationSource
+   (`latestMoverStatus.logs` bytes processed / `lastSyncTime`).
 3. Put the dump in the object store (SigV4 S3, `PORTAGE_STORE_DIR`, or memory).
 4. Optionally create CSI VolumeSnapshots (same-cloud safety net).
 5. Evaluate **usefulness**. Certs-only ~12 KiB Postgres **fails** the Action.
@@ -23,7 +29,10 @@ kubectl -n tenant-a get action backup-1 -w
 
 ## Restore
 
-1. Preflight: refuse if any stateful artifact is not useful.
+1. Preflight: restore each workload independently. Stateless and workloads
+   with a useful artifact proceed. A missing PVC artifact is **skipped**
+   (reported on that workload) and does not abort the Action. The Action
+   fails only when nothing in the inventory is restorable.
 2. Export source objects, render dest (`Sanitize`, `Git`, or `Webhook`; always
    sanitized after). `runtimeClassName` is remapped via
    `ClusterPair.spec.runtimeClassMap` or stripped when unmapped. Bound dest
@@ -52,9 +61,17 @@ etcd backup. The Kubernetes API is the data plane:
    It does not Succeeded and stop.
 
 **CRDs are always in the graph** when this is enabled — unknown CRs cannot
-restore without them — unless listed in `excludeGVKs` (CRD name, resource,
-`group/kind`, or `group/version/kind`). Dest admission, Gateway API
-experimental-vs-standard channel, and version skew are the usual reasons.
+restore without them — unless listed in `excludeGVKs`. Each form matches
+both the CRD object and its instances:
+
+- CRD name: `backendtlspolicies.gateway.networking.k8s.io`
+- `group/kind`: `gateway.networking.k8s.io/BackendTLSPolicy` (also
+  `gateway.networking.k8s.io/GatewayClass` → `gatewayclasses`)
+- `group/version/kind`: `gateway.networking.k8s.io/v1alpha3/BackendTLSPolicy`
+- resource: `backendtlspolicies`, `gatewayclasses`
+
+Dest admission, Gateway API experimental-vs-standard channel, and version
+skew are the usual reasons.
 Other cluster-scoped APIs (Namespaces in the selector,
 ClusterRoles/Bindings, ClusterIssuers, …) are included by default
 (`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,

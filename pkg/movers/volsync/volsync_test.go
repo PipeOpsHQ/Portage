@@ -18,8 +18,11 @@ package volsync
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -366,5 +369,108 @@ func TestReplicateDirectUsesRsyncTLS(t *testing.T) {
 	_, found, _ := unstructured.NestedFieldNoCopy(obj.Object, "spec", "rsyncTLS")
 	if !found {
 		t.Fatal("expected rsyncTLS")
+	}
+}
+
+func TestParseResticBytes(t *testing.T) {
+	t.Parallel()
+	n := parseResticBytes("processed 3 files, 75.964 KiB in 0:01\nsnapshot abc saved")
+	if n < 70*1024 || n > 80*1024 {
+		t.Fatalf("parsed %d", n)
+	}
+	if parseResticBytes("no size here") != 0 {
+		t.Fatal("empty logs must parse as 0")
+	}
+}
+
+func TestBackupReadsResticMoverSize(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "ns", Name: "lone", Kind: "PersistentVolumeClaim", PVCNames: []string{"lone"}, Class: portagev1alpha1.ClassGenericPVC}
+	art, err := m.Backup(context.Background(), w, movers.ClusterHandle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if art.Useful || art.Message == "volsync is replicate, not backup" {
+		t.Fatalf("pending restic must wait, not claim replicate-only: %+v", art)
+	}
+	src, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-lone", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unstructured.SetNestedField(src.Object, "2026-10-01T00:00:00Z", "status", "lastSyncTime")
+	_ = unstructured.SetNestedMap(src.Object, map[string]any{
+		"result": "Successful",
+		"logs":   "processed 12 files, 128.0 KiB in 0:02\nsnapshot abc saved",
+	}, "status", "latestMoverStatus")
+	if _, err := dyn.Resource(srcGVR).Namespace("ns").Update(context.Background(), src, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	art, err = m.Backup(context.Background(), w, movers.ClusterHandle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !art.Useful || art.SizeBytes < 64*1024 {
+		t.Fatalf("restic bytes must pass the volume floor: %+v", art)
+	}
+}
+
+func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	srcDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dstDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	srcKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: "ns"}},
+	)
+	dstKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-dest-1", Labels: map[string]string{hostnameLabel: "aks-dest-1"}}},
+		&appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "ns"},
+			Spec: appsv1.StatefulSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				NodeSelector: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
+			}}},
+		},
+		&batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: "volsync-dst-portage-redis", Namespace: "ns"},
+			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				NodeSelector: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
+			}}},
+		},
+	)
+	m := Mover{
+		Dynamic: srcDyn, DestDynamic: dstDyn,
+		Kube: srcKube, DestKube: dstKube,
+		Transport: portagev1alpha1.TransportObjectStore,
+	}
+	w := classify.Workload{Namespace: "ns", Name: "redis", PVCNames: []string{"data"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	sts, err := dstKube.AppsV1().StatefulSets("ns").Get(context.Background(), "redis", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sts.Spec.Template.Spec.NodeSelector[hostnameLabel] != "" {
+		t.Fatalf("dest STS still pinned: %v", sts.Spec.Template.Spec.NodeSelector)
+	}
+	if _, err := dstKube.BatchV1().Jobs("ns").Get(context.Background(), "volsync-dst-portage-redis", metav1.GetOptions{}); err == nil {
+		t.Fatal("mover job pinned to a source-only hostname must be deleted so VolSync recreates it")
+	}
+	probe, err := m.Probe(context.Background(), w, movers.ClusterHandle{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(probe.Message, "source-only node") {
+		t.Fatalf("deleted pin must not remain in probe: %s", probe.Message)
 	}
 }

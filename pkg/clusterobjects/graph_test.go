@@ -448,6 +448,68 @@ func TestSkipPortageCRDAndSystemClusterRole(t *testing.T) {
 	}
 }
 
+func TestExcludeAllDocumentedForms(t *testing.T) {
+	t.Parallel()
+	tlsGVR := Ref{GroupVersionResource: schema.GroupVersionResource{
+		Group: "gateway.networking.k8s.io", Version: "v1alpha3", Resource: "backendtlspolicies",
+	}}
+	gcGVR := Ref{GroupVersionResource: schema.GroupVersionResource{
+		Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gatewayclasses",
+	}}
+	crdGVR := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
+	tlsCRD := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+		"metadata": map[string]any{"name": "backendtlspolicies.gateway.networking.k8s.io"},
+		"spec":     map[string]any{"group": "gateway.networking.k8s.io", "names": map[string]any{"kind": "BackendTLSPolicy", "plural": "backendtlspolicies"}},
+	}}
+	gcCRD := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+		"metadata": map[string]any{"name": "gatewayclasses.gateway.networking.k8s.io"},
+		"spec":     map[string]any{"group": "gateway.networking.k8s.io", "names": map[string]any{"kind": "GatewayClass", "plural": "gatewayclasses"}},
+	}}
+	keepCRD := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+		"metadata": map[string]any{"name": "widgets.stable.example.com"},
+		"spec":     map[string]any{"group": "stable.example.com", "names": map[string]any{"kind": "Widget", "plural": "widgets"}},
+	}}
+	forms := []struct {
+		exclude string
+		tls, gc bool
+	}{
+		{"backendtlspolicies.gateway.networking.k8s.io", true, false},
+		{"gateway.networking.k8s.io/BackendTLSPolicy", true, false},
+		{"gateway.networking.k8s.io/v1alpha3/BackendTLSPolicy", true, false},
+		{"backendtlspolicies", true, false},
+		{"gatewayclasses", false, true},
+		{"gateway.networking.k8s.io/GatewayClass", false, true},
+		{"gateway.networking.k8s.io/v1/GatewayClass", false, true},
+	}
+	for _, tc := range forms {
+		ex := []string{tc.exclude}
+		if excludedGVR(tlsGVR, "BackendTLSPolicy", ex) != tc.tls {
+			t.Errorf("%s: backendtlspolicies GVR match=%v want %v", tc.exclude, !tc.tls, tc.tls)
+		}
+		if excludedGVR(tlsGVR, "", ex) != tc.tls {
+			t.Errorf("%s: backendtlspolicies GVR with empty Kind match=%v want %v", tc.exclude, !tc.tls, tc.tls)
+		}
+		if excludedObj(crdGVR, tlsCRD, ex) != tc.tls {
+			t.Errorf("%s: BackendTLSPolicy CRD object match=%v want %v", tc.exclude, !tc.tls, tc.tls)
+		}
+		if excludedGVR(gcGVR, "GatewayClass", ex) != tc.gc {
+			t.Errorf("%s: gatewayclasses GVR match=%v want %v", tc.exclude, !tc.gc, tc.gc)
+		}
+		if excludedGVR(gcGVR, "", ex) != tc.gc {
+			t.Errorf("%s: gatewayclasses GVR with empty Kind match=%v want %v", tc.exclude, !tc.gc, tc.gc)
+		}
+		if excludedObj(crdGVR, gcCRD, ex) != tc.gc {
+			t.Errorf("%s: GatewayClass CRD object match=%v want %v", tc.exclude, !tc.gc, tc.gc)
+		}
+		if excludedObj(crdGVR, keepCRD, ex) {
+			t.Errorf("%s: must not exclude unrelated CRD", tc.exclude)
+		}
+	}
+}
+
 func TestDiscoverExcludeGVKs(t *testing.T) {
 	t.Parallel()
 	disco := &fakediscovery.FakeDiscovery{Fake: &clienttesting.Fake{

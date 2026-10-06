@@ -19,15 +19,28 @@ limitations under the License.
 package actionphase
 
 import (
+	"strings"
+
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 )
+
+// Skipped is a per-workload Restore that was reported rather than used to
+// abort the Action (no useful artifact, dest-illegal CRD, …).
+func Skipped(w portagev1alpha1.WorkloadActionStatus) bool {
+	return strings.HasPrefix(w.Message, "skipped:")
+}
 
 // CanSucceed reports whether an Action may legally enter phase Succeeded.
 func CanSucceed(workloads []portagev1alpha1.WorkloadActionStatus) (bool, string) {
 	if len(workloads) == 0 {
 		return false, "no workloads recorded"
 	}
+	restorable := 0
 	for _, w := range workloads {
+		if Skipped(w) {
+			continue
+		}
+		restorable++
 		if !w.Ready {
 			return false, w.Name + " is not Ready"
 		}
@@ -37,6 +50,9 @@ func CanSucceed(workloads []portagev1alpha1.WorkloadActionStatus) (bool, string)
 		if !w.ProbeOK {
 			return false, w.Name + " class probe has not passed"
 		}
+	}
+	if restorable == 0 {
+		return false, "no restorable workloads"
 	}
 	return true, ""
 }
