@@ -25,6 +25,7 @@ rules:
   resources:
   - pods
   verbs:
+  - delete
   - get
   - list
   - watch
@@ -68,6 +69,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - networking.k8s.io

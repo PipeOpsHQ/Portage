@@ -9,6 +9,13 @@
 
 ### Fixed
 
+- Dest-local K8up/Velero no longer mount VolSync restic cache PVCs
+  (`volsync-*-cache`, including legacy `volsync-portage-*-cache`).
+  Replicate/Backup label those claims `velero.io/exclude-from-backup=true`,
+  annotate `k8up.io/backup=false`, and delete backup Jobs already attached
+  so dest movers are not stuck Multi-Attach. Cluster-object sync skips
+  `k8up.io` / `velero.io` / `stash.appscode.com` so dest backup Schedules
+  stay dest-local. User replica PVCs remain backupable.
 - Logical dumps read `POSTGRES_USER`/`POSTGRES_DB` and `REDIS_PASSWORD`
   from the container environment (marketplace images do not use the
   engine defaults). Redis dumps to a temp file then stdout so

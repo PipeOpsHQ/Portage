@@ -21,7 +21,6 @@ package volsync
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -128,6 +127,9 @@ func (m Mover) Backup(ctx context.Context, w classify.Workload, _ movers.Cluster
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync source: %w", err)
 	}
+	if err := m.protectCaches(ctx, w.Namespace); err != nil {
+		return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync scratch PVCs: %w", err)
+	}
 	return m.artifactFromSource(ctx, w, name)
 }
 
@@ -169,9 +171,9 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		}
 		m.stripDestScheduling(ctx, w.Namespace)
 	}
-	pvc := w.PVCNames[0]
-	if isScratchPVC(pvc) {
-		return nil
+	pvc := firstDataPVC(w.PVCNames)
+	if pvc == "" {
+		return m.protectCaches(ctx, w.Namespace)
 	}
 	name := "portage-" + w.Name
 	dstClient := m.destDyn()
@@ -190,7 +192,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	if err := applyNamespaced(ctx, dstClient, dstGVR, dst); err != nil {
 		return fmt.Errorf("volsync destination: %w", err)
 	}
-	return nil
+	return m.protectCaches(ctx, w.Namespace)
 }
 
 // scrubMisplaced drops CRs that a bad reconcile (dest=source fallback or
@@ -357,8 +359,8 @@ func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 		"copyMethod":    m.copyMethod(),
 		"cacheCapacity": "1Gi",
 	}
-	if len(w.PVCNames) > 0 {
-		spec["destinationPVC"] = w.PVCNames[0]
+	if pvc := firstDataPVC(w.PVCNames); pvc != "" {
+		spec["destinationPVC"] = pvc
 	} else {
 		spec["accessModes"] = []any{"ReadWriteOnce"}
 		spec["capacity"] = "1Gi"
@@ -469,7 +471,7 @@ func (m Mover) schedule() string {
 }
 
 func isScratchPVC(name string) bool {
-	return strings.HasPrefix(name, "volsync-src-") || strings.HasPrefix(name, "volsync-dst-")
+	return classify.ScratchPVCName(name)
 }
 
 func firstDataPVC(names []string) string {

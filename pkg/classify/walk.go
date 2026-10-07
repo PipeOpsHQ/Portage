@@ -87,7 +87,7 @@ func Walk(ctx context.Context, client kubernetes.Interface, namespaces []string)
 			if _, ok := claimed[key]; ok {
 				continue
 			}
-			if isMoverScratchPVC(pvcs.Items[i]) {
+			if IsMoverScratchPVC(pvcs.Items[i]) {
 				// VolSync cache/clone PVCs are not user data. Treating them as
 				// workloads creates nested ReplicationSources (cache-of-cache)
 				// that steal the restic lock and starve the real PVC.
@@ -214,9 +214,23 @@ func markClaimed(claimed map[string]struct{}, ns string, pvcs []string) {
 	}
 }
 
-// isMoverScratchPVC is true for volumes VolSync (or a similar mover) created
+// ScratchPVCName is true for VolSync restic cache/clone claim names.
+// Current movers use volsync-src-<owner>-cache / volsync-dst-<owner>-cache.
+// Older VolSync used volsync-<owner>-cache (no src/dst infix), which is
+// what dest K8up Schedules have been mounting.
+func ScratchPVCName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "volsync-src-") || strings.HasPrefix(name, "volsync-dst-") {
+		return true
+	}
+	return strings.HasPrefix(name, "volsync-") && strings.HasSuffix(name, "-cache")
+}
+
+// IsMoverScratchPVC is true for volumes VolSync (or a similar mover) created
 // to hold restic/rclone cache or clones. They must not be inventoried.
-func isMoverScratchPVC(pvc corev1.PersistentVolumeClaim) bool {
+func IsMoverScratchPVC(pvc corev1.PersistentVolumeClaim) bool {
 	if pvc.Labels["app.kubernetes.io/created-by"] == "volsync" {
 		return true
 	}
@@ -226,6 +240,5 @@ func isMoverScratchPVC(pvc corev1.PersistentVolumeClaim) bool {
 			return true
 		}
 	}
-	n := pvc.Name
-	return strings.HasPrefix(n, "volsync-src-") || strings.HasPrefix(n, "volsync-dst-")
+	return ScratchPVCName(pvc.Name)
 }

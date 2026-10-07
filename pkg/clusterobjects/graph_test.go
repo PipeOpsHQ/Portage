@@ -173,6 +173,15 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 			{GroupVersion: "volsync.backube/v1alpha1", APIResources: []metav1.APIResource{
 				{Name: "replicationsources", Namespaced: true, Kind: "ReplicationSource", Verbs: []string{"list", "create", "get"}},
 			}},
+			{GroupVersion: "k8up.io/v1", APIResources: []metav1.APIResource{
+				{Name: "schedules", Namespaced: true, Kind: "Schedule", Verbs: []string{"list", "create", "get"}},
+			}},
+			{GroupVersion: "velero.io/v1", APIResources: []metav1.APIResource{
+				{Name: "backups", Namespaced: true, Kind: "Backup", Verbs: []string{"list", "create", "get"}},
+			}},
+			{GroupVersion: "stash.appscode.com/v1beta1", APIResources: []metav1.APIResource{
+				{Name: "backupconfigurations", Namespaced: true, Kind: "BackupConfiguration", Verbs: []string{"list", "create", "get"}},
+			}},
 			{GroupVersion: "capsule.clastix.io/v1beta2", APIResources: []metav1.APIResource{
 				{Name: "capsuleconfigurations", Namespaced: false, Kind: "CapsuleConfiguration", Verbs: []string{"list", "create", "get"}},
 			}},
@@ -225,6 +234,9 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 		}
 		if g.Resource == "replicationsources" || g.Resource == "capsuleconfigurations" {
 			t.Fatal("VolSync CRs and CapsuleConfiguration are dest-local")
+		}
+		if g.Resource == "schedules" || g.Resource == "backups" || g.Resource == "backupconfigurations" {
+			t.Fatal("dest-local backup CRs (K8up/Velero/Stash) must not be copied")
 		}
 		if g.Resource == "networkpolicies" {
 			np = true

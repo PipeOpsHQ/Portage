@@ -131,7 +131,8 @@ func (r *ActionReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=portage.io,resources=policies,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=volsync.backube,resources=replicationsources;replicationdestinations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=portage.io,resources=policies/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch

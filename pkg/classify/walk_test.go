@@ -222,6 +222,12 @@ func TestWalkSkipsVolSyncCachePVCs(t *testing.T) {
 				Labels:    map[string]string{"app.kubernetes.io/created-by": "volsync"},
 			},
 		},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "volsync-portage-hidden-surf-adequate-knov-beta-cache",
+				Namespace: ns,
+			},
+		},
 	)
 	inv, err := Walk(context.Background(), client, []string{ns})
 	if err != nil {
@@ -232,5 +238,27 @@ func TestWalkSkipsVolSyncCachePVCs(t *testing.T) {
 	}
 	if inv.Workloads[0].Name != "data" {
 		t.Fatalf("got %s, want data", inv.Workloads[0].Name)
+	}
+}
+
+func TestScratchPVCName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"data-pg-0", false},
+		{"redis-data-icy-field-redis-0", false},
+		{"volsync-src-portage-data-cache", true},
+		{"volsync-dst-portage-hidden-surf-adequate-knov-beta-cache", true},
+		{"volsync-portage-hidden-surf-adequate-knov-beta-cache", true},
+		{"volsync-portage-restless-pond-adequate-knov-beta-cache", true},
+		{"volsync-src-portage-data", true},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := ScratchPVCName(tc.name); got != tc.want {
+			t.Errorf("ScratchPVCName(%q)=%v want %v", tc.name, got, tc.want)
+		}
 	}
 }

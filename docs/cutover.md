@@ -12,8 +12,13 @@
   (CSI Snapshot). Override `Policy.spec.moverOverrides.GenericPVC: rclone`
   for the old rclone hop. Direct transport → rsyncTLS (`portage-rsync-tls` PSK).
   The classifier does **not** inventory VolSync cache PVCs
-  (`volsync-src-*-cache`, `volsync-dst-*-cache`). Treating them as workloads
-  creates nested ReplicationSources and the user PVC never syncs.
+  (`volsync-src-*-cache`, `volsync-dst-*-cache`, legacy
+  `volsync-<owner>-cache`). Treating them as workloads creates nested
+  ReplicationSources and the user PVC never syncs. Replicate marks those
+  claims so dest-local K8up/Velero skip them (`k8up.io/backup=false`,
+  `velero.io/exclude-from-backup=true`) and deletes a backup Job that is
+  already attached, which otherwise Multi-Attaches the RWO cache and
+  leaves the dest mover in ContainerCreating.
   Replicate creates the dest PVC (same name, size from source, StorageClass
   via `ClusterPair.spec.storageClassMap`) before setting VolSync
   `destinationPVC`. StatefulSet claims use the realized name

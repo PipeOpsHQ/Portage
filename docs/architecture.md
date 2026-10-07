@@ -114,11 +114,16 @@ VolSync cache and clone volumes are **not** leftover user data:
 
 - label `app.kubernetes.io/created-by=volsync`
 - ownerRef `ReplicationSource` / `ReplicationDestination`
-- name prefix `volsync-src-` or `volsync-dst-`
+- name prefix `volsync-src-` or `volsync-dst-`, or `volsync-*-cache`
+  (legacy restic cache)
 
 Replicating those nests ReplicationSources (cache-of-cache), contends for the
 restic lock and RWO cache PVC, and the user volume never reaches
-`lastSyncTime`.
+`lastSyncTime`. Dest-local K8up/Velero jobs that mount the same RWO cache
+block the dest mover (Multi-Attach). Replicate annotates the cache PVCs
+so those tools skip them and deletes backup Jobs already attached. User
+replica PVCs stay backupable. Cluster-object sync does not copy
+`k8up.io` / `velero.io` / `stash.appscode.com` CRs.
 
 | Signal | Class |
 |---|---|

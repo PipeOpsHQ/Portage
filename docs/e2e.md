@@ -27,8 +27,10 @@ longer serves `minio/minio`). `ClusterPair.spec.source.address` is dest→source
 (NodePort on the src kind node).
 
 The PVC check fails if a ReplicationSource `sourcePVC` starts with `volsync-`.
-VolSync cache volumes are mover scratch; classifying them nests
-ReplicationSources (cache-of-cache) and starves `files/data`.
+VolSync cache volumes (`volsync-src-*`, `volsync-dst-*`, legacy
+`volsync-*-cache`) are mover scratch; classifying them nests
+ReplicationSources (cache-of-cache) and starves `files/data`. Dest-local
+K8up/Velero must not mount them.
 
 ## Next
 

@@ -90,6 +90,14 @@ var skipGroup = map[string]struct{}{
 	"flowcontrol.apiserver.k8s.io": {},
 	"admissionregistration.k8s.io": {},
 	"volsync.backube":              {},
+	// Dest-local backup operators. Copying their Schedules/Backups onto
+	// dest makes them mount Portage VolSync cache PVCs (RWO Multi-Attach)
+	// and overwrite dest-only backup policy.
+	"k8up.io":             {},
+	"k8up.synextreme.com": {},
+	"backup.appuio.io":    {},
+	"velero.io":           {},
+	"stash.appscode.com":  {},
 }
 
 var skipClusterRole = map[string]struct{}{

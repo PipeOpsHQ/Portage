@@ -3,9 +3,12 @@
 ## Classify first
 
 Portage walks StatefulSets, Deployments, DaemonSets, and leftover PVCs.
-VolSync restic cache/clone PVCs (`volsync-src-*`, `volsync-dst-*`, or
-`app.kubernetes.io/created-by=volsync`) are skipped — they are mover
-scratch, not user state.
+VolSync restic cache/clone PVCs (`volsync-src-*`, `volsync-dst-*`,
+legacy `volsync-*-cache`, or `app.kubernetes.io/created-by=volsync`)
+are skipped — they are mover scratch, not user state. On source and dest
+they are marked so dest-local K8up (`k8up.io/backup=false`) and Velero
+(`velero.io/exclude-from-backup=true`) skip them; a backup Job already
+holding a cache volume is deleted so the dest mover can attach.
 
 | Signal | Class |
 |---|---|

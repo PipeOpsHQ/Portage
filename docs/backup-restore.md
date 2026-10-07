@@ -75,7 +75,8 @@ skew are the usual reasons.
 Other cluster-scoped APIs (Namespaces in the selector,
 ClusterRoles/Bindings, ClusterIssuers, …) are included by default
 (`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,
-CapsuleConfiguration, VolSync CRs, admission webhooks, and `system:` RBAC stay
+CapsuleConfiguration, VolSync CRs, dest-local backup CRs (`k8up.io`,
+`velero.io`, `stash.appscode.com`), admission webhooks, and `system:` RBAC stay
 dest-local. Source objects with `deletionTimestamp` are Deleted on dest.
 Dest Update retries 409 Conflict.
 
