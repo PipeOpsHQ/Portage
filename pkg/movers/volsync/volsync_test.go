@@ -214,6 +214,65 @@ func TestResticMoverSecurityContextFromWorkload(t *testing.T) {
 	}
 }
 
+func TestDestResticOmitsRootFSGroup(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	zero := int64(0)
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{
+		Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"},
+		Class: portagev1alpha1.ClassSQLLogical, Engine: "postgres", FSGroup: &zero,
+	}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := dyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, found, _ := unstructured.NestedInt64(dst.Object, "spec", "restic", "moverSecurityContext", "fsGroup")
+	if found && g == 0 {
+		t.Fatal("dest restic must not set fsGroup 0 (kubelet g+rw breaks Postgres server.key 0600)")
+	}
+	uid, found, _ := unstructured.NestedInt64(dst.Object, "spec", "restic", "moverSecurityContext", "runAsUser")
+	if !found || uid != 999 {
+		t.Fatalf("dest runAsUser=%d found=%v want 999", uid, found)
+	}
+	src, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sg, _, _ := unstructured.NestedInt64(src.Object, "spec", "restic", "moverSecurityContext", "fsGroup")
+	if sg != 0 {
+		t.Fatalf("source may keep declared fsGroup 0, got %d", sg)
+	}
+}
+
+func TestResticPrivilegedMoversWhenFSGroupZero(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	zero := int64(0)
+	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}, FSGroup: &zero}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	ns, err := kube.CoreV1().Namespaces().Get(context.Background(), "ns", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Annotations[privilegedMoversAnnotation] != "true" {
+		t.Fatal("fsGroup 0 is root; restic still needs DAC_OVERRIDE to read mode 700 PGDATA")
+	}
+}
+
 func TestResticPrivilegedMoversWhenNoFSGroup(t *testing.T) {
 	t.Parallel()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
@@ -446,6 +505,19 @@ func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
 				NodeSelector: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
 			}}},
 		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "redis-0", Namespace: "ns"},
+			Spec: corev1.PodSpec{
+				NodeSelector: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
+				Volumes: []corev1.Volume{{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"},
+					},
+				}},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodPending},
+		},
 	)
 	m := Mover{
 		Dynamic: srcDyn, DestDynamic: dstDyn,
@@ -465,6 +537,9 @@ func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
 	}
 	if _, err := dstKube.BatchV1().Jobs("ns").Get(context.Background(), "volsync-dst-portage-redis", metav1.GetOptions{}); err == nil {
 		t.Fatal("mover job pinned to a source-only hostname must be deleted so VolSync recreates it")
+	}
+	if _, err := dstKube.CoreV1().Pods("ns").Get(context.Background(), "redis-0", metav1.GetOptions{}); err == nil {
+		t.Fatal("dest user pod pinned to a source-only hostname must be deleted so AffinityFromVolume does not copy it")
 	}
 	probe, err := m.Probe(context.Background(), w, movers.ClusterHandle{})
 	if err != nil {

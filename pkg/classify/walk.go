@@ -132,6 +132,14 @@ func fromPodOwner(ns, kind, apiVersion, name string, spec corev1.PodSpec, pvcs [
 		w.FSGroup = spec.SecurityContext.FSGroup
 		w.RunAsUser = spec.SecurityContext.RunAsUser
 	}
+	if w.RunAsUser == nil {
+		for _, c := range spec.Containers {
+			if c.SecurityContext != nil && c.SecurityContext.RunAsUser != nil {
+				w.RunAsUser = c.SecurityContext.RunAsUser
+				break
+			}
+		}
+	}
 	if eng, ok := matchImages(images); ok {
 		w.Engine = eng.Name
 		w.Class = eng.Class

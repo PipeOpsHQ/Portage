@@ -368,7 +368,7 @@ func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	if m.copyMethod() == "Snapshot" && m.SnapshotClass != "" {
 		spec["volumeSnapshotClassName"] = m.SnapshotClass
 	}
-	if sc := moverSecurityContext(w); sc != nil {
+	if sc := destMoverSecurityContext(w); sc != nil {
 		spec["moverSecurityContext"] = sc
 	}
 	stripDestMoverScheduling(spec)
@@ -389,13 +389,54 @@ func moverSecurityContext(w classify.Workload) map[string]any {
 	return sc
 }
 
+// destMoverSecurityContext must not set fsGroup 0. VolSync Direct mounts
+// destinationPVC in the restic Job; kubelet then chmods the restored tree
+// g+rw, and Postgres rejects server.key as "group or world access".
+func destMoverSecurityContext(w classify.Workload) map[string]any {
+	sc := map[string]any{}
+	if w.RunAsUser != nil && *w.RunAsUser != 0 {
+		sc["runAsUser"] = *w.RunAsUser
+	} else if uid := engineRestoreUID(w); uid != 0 {
+		sc["runAsUser"] = uid
+	}
+	if w.FSGroup != nil && *w.FSGroup != 0 {
+		sc["fsGroup"] = *w.FSGroup
+	} else if uid, ok := sc["runAsUser"].(int64); ok && uid != 0 {
+		sc["fsGroup"] = uid
+	}
+	if len(sc) == 0 {
+		return nil
+	}
+	return sc
+}
+
+func engineRestoreUID(w classify.Workload) int64 {
+	switch w.Engine {
+	case "mysql", "mariadb":
+		return 27
+	case "postgres", "redis", "mongo", "mongodb":
+		return 999
+	}
+	switch w.Class {
+	case portagev1alpha1.ClassSQLLogical, portagev1alpha1.ClassKVLogical:
+		return 999
+	}
+	return 0
+}
+
 // VolSync grants DAC_OVERRIDE (and CHOWN/FOWNER) only when the namespace
 // is annotated. Marketplace images that own PVC data (mode 700, UID 999)
 // via capabilities instead of declaring fsGroup need that fallback.
 const privilegedMoversAnnotation = "volsync.backube/privileged-movers"
 
 func needsPrivilegedMover(w classify.Workload) bool {
-	return w.FSGroup == nil && w.RunAsUser == nil
+	if w.RunAsUser != nil && *w.RunAsUser != 0 {
+		return false
+	}
+	if w.FSGroup != nil && *w.FSGroup != 0 {
+		return false
+	}
+	return true
 }
 
 func enablePrivilegedMovers(ctx context.Context, kube kubernetes.Interface, ns string) error {

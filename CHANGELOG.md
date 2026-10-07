@@ -9,6 +9,15 @@
 
 ### Fixed
 
+- Dest Replicate deletes dest user pods (not only mover Jobs) whose
+  `kubernetes.io/hostname` pin is not a dest node. VolSync Direct
+  AffinityFromVolume copies that pin from a Pending dest STS pod onto the
+  next mover Job, which is why deleting the Job alone did not stick.
+- Dest restic `moverSecurityContext` no longer sets `fsGroup: 0`. Kubelet
+  was chmod-ing restored PGDATA `g+rw`, and Postgres then refused
+  `server.key` (`u=rw (0600)`). Dest movers restore as the engine UID
+  (999 for Postgres/Redis). `fsGroup: 0` still enables privileged movers
+  (DAC_OVERRIDE) so source restic can read mode 700 data.
 - Dest-local K8up/Velero no longer mount VolSync restic cache PVCs
   (`volsync-*-cache`, including legacy `volsync-portage-*-cache`).
   Replicate/Backup label those claims `velero.io/exclude-from-backup=true`,

@@ -146,6 +146,40 @@ func TestWalkCapturesPodFSGroup(t *testing.T) {
 	}
 }
 
+func TestWalkCapturesContainerRunAsUser(t *testing.T) {
+	t.Parallel()
+	uid := int64(999)
+	ns := "db"
+	client := fake.NewSimpleClientset(&appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: ns},
+		Spec: appsv1.StatefulSetSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(0)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
+					Containers: []corev1.Container{{
+						Name:            "pg",
+						Image:           "postgres:16",
+						SecurityContext: &corev1.SecurityContext{RunAsUser: &uid},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "data",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data-pg-0"},
+						},
+					}},
+				},
+			},
+		},
+	})
+	inv, err := Walk(context.Background(), client, []string{ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Workloads) != 1 || inv.Workloads[0].RunAsUser == nil || *inv.Workloads[0].RunAsUser != 999 {
+		t.Fatalf("RunAsUser: %+v", inv.Workloads)
+	}
+}
+
 func TestWalkUsesRealizedStatefulSetPVCNames(t *testing.T) {
 	t.Parallel()
 	ns := "tenant-b"

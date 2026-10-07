@@ -28,8 +28,12 @@
   Restore against a dest that Replicate already Bound skips re-applying PVC
   spec (`volumeName` is immutable). Dest VolSync Direct movers copy
   dest-pod scheduling; Replicate strips dest STS/Deploy hostname
-  `nodeSelector` and deletes dest mover Jobs pinned to a hostname that is
-  not a dest node, then reports that pin on Probe if it comes back.
+  `nodeSelector`, deletes dest pods that still carry a source-only
+  hostname (AffinityFromVolume copies those onto the next mover), and
+  deletes dest mover Jobs pinned to a hostname that is not a dest node.
+  Probe reports the pin if GitOps re-injects it.
+  Dest restic does not set `fsGroup: 0` so kubelet does not chmod restored
+  PGDATA `g+rw` (Postgres requires `server.key` mode 0600).
 
 `Policy.spec.replicate` syncs data and ancillary objects, not workload
 manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore
@@ -42,10 +46,11 @@ re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.en
 keeps one `replicate-<policy>` Action running. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
-`fsGroup`/`runAsUser` into `moverSecurityContext`. Workloads that declare
-neither (marketplace images that own `pgdata` via `DAC_OVERRIDE`) get the
-namespace annotation `volsync.backube/privileged-movers=true` so VolSync
-grants that capability.
+`fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest omits
+`fsGroup: 0` and restores as the engine UID so kubelet does not chmod
+PGDATA `g+rw`. Workloads that declare neither (or only `fsGroup: 0`) get
+the namespace annotation `volsync.backube/privileged-movers=true` so VolSync
+grants `DAC_OVERRIDE`.
 
 `Succeeded` is only for dry-run. Dest in sync is `CatchingUp` with
 `replica lag=0; dest probed; live-sync`. Lag or dest miss stays CatchingUp
