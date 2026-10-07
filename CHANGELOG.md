@@ -9,6 +9,14 @@
 
 ### Fixed
 
+- Dest workloads drop `fsGroup: 0`, and Postgres drops any `fsGroup`.
+  Kubelet ORs `0660` onto the volume when the dest pod mounts, which is
+  after restic has written `server.key` as `0600`. Clearing it only on
+  the mover left the restored Postgres pod in CrashLoopBackOff. Dest
+  restic no longer sets `fsGroup` at all (runAsUser stays the engine UID).
+- A NotReady Node object whose name is a source hostname no longer counts
+  as a dest node. VolSync Direct resolves `spec.nodeName` of the pod that
+  mounts the PVC and will pin the mover to that ghost.
 - Dest Replicate deletes dest user pods (not only mover Jobs) whose
   `kubernetes.io/hostname` pin is not a dest node. VolSync Direct
   AffinityFromVolume copies that pin from a Pending dest STS pod onto the

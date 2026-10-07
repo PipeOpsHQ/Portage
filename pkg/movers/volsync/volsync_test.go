@@ -233,9 +233,8 @@ func TestDestResticOmitsRootFSGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, found, _ := unstructured.NestedInt64(dst.Object, "spec", "restic", "moverSecurityContext", "fsGroup")
-	if found && g == 0 {
-		t.Fatal("dest restic must not set fsGroup 0 (kubelet g+rw breaks Postgres server.key 0600)")
+	if _, found, _ := unstructured.NestedInt64(dst.Object, "spec", "restic", "moverSecurityContext", "fsGroup"); found {
+		t.Fatal("dest restic must not set fsGroup (kubelet ORs 0660 and Postgres rejects server.key 0600)")
 	}
 	uid, found, _ := unstructured.NestedInt64(dst.Object, "spec", "restic", "moverSecurityContext", "runAsUser")
 	if !found || uid != 999 {
@@ -490,14 +489,30 @@ func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: "ns"}},
 	)
+	zero := int64(0)
 	dstKube := k8sfake.NewSimpleClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-dest-1", Labels: map[string]string{hostnameLabel: "aks-dest-1"}}},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "aks-dest-1", Labels: map[string]string{hostnameLabel: "aks-dest-1"}},
+			Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+		},
+		// A NotReady Node object with a source hostname must not count as dest.
+		// AffinityFromVolume resolves it and the mover stays Pending.
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "aks-doks-compat-z8vml", Labels: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"}},
+			Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}},
+		},
 		&appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "ns"},
 			Spec: appsv1.StatefulSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
+				NodeSelector:    map[string]string{hostnameLabel: "aks-doks-compat-z8vml"},
+				SecurityContext: &corev1.PodSecurityContext{FSGroup: &zero},
+				Containers:      []corev1.Container{{Name: "pg", Image: "postgres:16"}},
 			}}},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "kept-0", Namespace: "ns"},
+			Spec:       corev1.PodSpec{NodeName: "aks-dest-1"},
 		},
 		&batchv1.Job{
 			ObjectMeta: metav1.ObjectMeta{Name: "volsync-dst-portage-redis", Namespace: "ns"},
@@ -534,6 +549,12 @@ func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
 	}
 	if sts.Spec.Template.Spec.NodeSelector[hostnameLabel] != "" {
 		t.Fatalf("dest STS still pinned: %v", sts.Spec.Template.Spec.NodeSelector)
+	}
+	if sts.Spec.Template.Spec.SecurityContext != nil && sts.Spec.Template.Spec.SecurityContext.FSGroup != nil {
+		t.Fatalf("dest postgres fsGroup=%v must be cleared so kubelet does not chmod server.key", *sts.Spec.Template.Spec.SecurityContext.FSGroup)
+	}
+	if _, err := dstKube.CoreV1().Pods("ns").Get(context.Background(), "kept-0", metav1.GetOptions{}); err != nil {
+		t.Fatal("pod scheduled on a Ready dest node must be kept")
 	}
 	if _, err := dstKube.BatchV1().Jobs("ns").Get(context.Background(), "volsync-dst-portage-redis", metav1.GetOptions{}); err == nil {
 		t.Fatal("mover job pinned to a source-only hostname must be deleted so VolSync recreates it")

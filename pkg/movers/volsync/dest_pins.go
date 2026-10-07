@@ -32,9 +32,11 @@ const hostnameLabel = "kubernetes.io/hostname"
 
 // stripDestScheduling removes source-cluster node pins from dest workloads
 // and deletes dest VolSync mover Jobs that AffinityFromVolume already stamped
-// with a hostname that does not exist on dest. Direct copyMethod copies
-// dest-pod nodeSelector onto the mover; dest GitOps often still carries the
-// source kubernetes.io/hostname.
+// with a hostname that is not a Ready dest node. Direct copyMethod does not
+// read ReplicationDestination or the source pod. It reads spec.nodeName of a
+// dest pod that mounts the PVC, looks that Node up, and copies its
+// kubernetes.io/hostname label onto the mover Job. Deleting the Job alone
+// does not stick while that pod still exists.
 func (m Mover) stripDestScheduling(ctx context.Context, ns string) {
 	dk := m.destKube()
 	if dk == nil || !m.remoteDest() || ns == "" {
@@ -60,12 +62,30 @@ func destHostnames(ctx context.Context, kube kubernetes.Interface) map[string]st
 	}
 	for i := range list.Items {
 		n := &list.Items[i]
+		// NotReady objects (a copied source Node with no kubelet) must not
+		// count. AffinityFromVolume will still resolve them and pin the mover
+		// to a hostname that never schedules.
+		if !nodeReady(n) {
+			continue
+		}
 		out[n.Name] = struct{}{}
 		if h := n.Labels[hostnameLabel]; h != "" {
 			out[h] = struct{}{}
 		}
 	}
 	return out
+}
+
+func nodeReady(n *corev1.Node) bool {
+	if n == nil {
+		return false
+	}
+	for _, c := range n.Status.Conditions {
+		if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func stripDestWorkloads(ctx context.Context, kube kubernetes.Interface, ns string) {

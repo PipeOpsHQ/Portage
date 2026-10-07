@@ -32,8 +32,9 @@
   hostname (AffinityFromVolume copies those onto the next mover), and
   deletes dest mover Jobs pinned to a hostname that is not a dest node.
   Probe reports the pin if GitOps re-injects it.
-  Dest restic does not set `fsGroup: 0` so kubelet does not chmod restored
-  PGDATA `g+rw` (Postgres requires `server.key` mode 0600).
+  Dest restic does not set `fsGroup`. Dest workloads drop `fsGroup: 0`,
+  and Postgres drops any `fsGroup`, so the app pod's mount does not chmod
+  restored PGDATA `g+rw` (Postgres requires `server.key` mode 0600).
 
 `Policy.spec.replicate` syncs data and ancillary objects, not workload
 manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore
@@ -46,9 +47,10 @@ re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.en
 keeps one `replicate-<policy>` Action running. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
-`fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest omits
-`fsGroup: 0` and restores as the engine UID so kubelet does not chmod
-PGDATA `g+rw`. Workloads that declare neither (or only `fsGroup: 0`) get
+`fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest restic
+sets `runAsUser` only. Dest pods drop `fsGroup: 0` (Postgres drops any
+`fsGroup`) so kubelet does not chmod PGDATA `g+rw` when the app mounts.
+Workloads that declare neither (or only `fsGroup: 0`) get
 the namespace annotation `volsync.backube/privileged-movers=true` so VolSync
 grants `DAC_OVERRIDE`.
 

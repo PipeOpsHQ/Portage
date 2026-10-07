@@ -389,25 +389,23 @@ func moverSecurityContext(w classify.Workload) map[string]any {
 	return sc
 }
 
-// destMoverSecurityContext must not set fsGroup 0. VolSync Direct mounts
-// destinationPVC in the restic Job; kubelet then chmods the restored tree
-// g+rw, and Postgres rejects server.key as "group or world access".
+// destMoverSecurityContext sets runAsUser and never fsGroup. Any fsGroup
+// makes kubelet OR 0660 onto the volume at mount, before restic writes and
+// again when the dest Postgres pod mounts. server.key must stay 0600.
+// Privileged movers (fsGroup unset or 0) restore as root and keep the
+// archived mode. runAsUser is the engine UID so a non-privileged mover
+// still matches the data owner.
 func destMoverSecurityContext(w classify.Workload) map[string]any {
-	sc := map[string]any{}
+	var uid int64
 	if w.RunAsUser != nil && *w.RunAsUser != 0 {
-		sc["runAsUser"] = *w.RunAsUser
-	} else if uid := engineRestoreUID(w); uid != 0 {
-		sc["runAsUser"] = uid
+		uid = *w.RunAsUser
+	} else {
+		uid = engineRestoreUID(w)
 	}
-	if w.FSGroup != nil && *w.FSGroup != 0 {
-		sc["fsGroup"] = *w.FSGroup
-	} else if uid, ok := sc["runAsUser"].(int64); ok && uid != 0 {
-		sc["fsGroup"] = uid
-	}
-	if len(sc) == 0 {
+	if uid == 0 {
 		return nil
 	}
-	return sc
+	return map[string]any{"runAsUser": uid}
 }
 
 func engineRestoreUID(w classify.Workload) int64 {
@@ -459,8 +457,10 @@ func enablePrivilegedMovers(ctx context.Context, kube kubernetes.Interface, ns s
 }
 
 // stripDestMoverScheduling clears dest-side VolSync mover tolerations.
-// Direct copyMethod copies dest-pod nodeSelector/tolerations onto the mover;
-// source-cluster pins (gvisor RuntimeClass, hostname) then fail dest scheduling.
+// Direct copyMethod copies the mounting pod's tolerations onto the mover
+// after it resolves spec.nodeName. Source RuntimeClass tolerations then
+// fail dest scheduling. NodeSelector is not a CR field VolSync will clear;
+// stripDestScheduling deletes Jobs and pods that still carry a foreign pin.
 func stripDestMoverScheduling(spec map[string]any) {
 	if spec == nil {
 		return

@@ -69,6 +69,45 @@ func TestPVCBoundKeepsVolumeName(t *testing.T) {
 	}
 }
 
+func TestPodSpecStripsRootFSGroup(t *testing.T) {
+	t.Parallel()
+	spec := &corev1.PodSpec{
+		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(0)), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch)},
+		Containers:      []corev1.Container{{Name: "redis", Image: "redis:7"}},
+	}
+	got := PodSpec(spec)
+	if spec.SecurityContext.FSGroup != nil {
+		t.Fatal("fsGroup 0 must be cleared; kubelet ORs 0660 at mount")
+	}
+	if len(got) == 0 || got[0] != StripRootFSGroup {
+		t.Fatalf("healers=%v", got)
+	}
+}
+
+func TestPodSpecKeepsNonRootFSGroup(t *testing.T) {
+	t.Parallel()
+	spec := &corev1.PodSpec{
+		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(999))},
+		Containers:      []corev1.Container{{Name: "redis", Image: "redis:7"}},
+	}
+	PodSpec(spec)
+	if spec.SecurityContext.FSGroup == nil || *spec.SecurityContext.FSGroup != 999 {
+		t.Fatalf("fsGroup=%v", spec.SecurityContext.FSGroup)
+	}
+}
+
+func TestPodSpecStripsPostgresFSGroup(t *testing.T) {
+	t.Parallel()
+	spec := &corev1.PodSpec{
+		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(int64(999))},
+		Containers:      []corev1.Container{{Name: "pg", Image: "ghcr.io/pipeops/postgres:16"}},
+	}
+	PodSpec(spec)
+	if spec.SecurityContext.FSGroup != nil {
+		t.Fatal("any postgres fsGroup widens server.key past 0600")
+	}
+}
+
 func TestPodSpecStripsZonePin(t *testing.T) {
 	t.Parallel()
 	spec := &corev1.PodSpec{

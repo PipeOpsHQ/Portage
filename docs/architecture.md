@@ -125,10 +125,12 @@ so those tools skip them and deletes backup Jobs already attached. User
 replica PVCs stay backupable. Cluster-object sync does not copy
 `k8up.io` / `velero.io` / `stash.appscode.com` CRs.
 
-Dest restic omits `fsGroup: 0` so kubelet does not widen restored file
-modes (Postgres `server.key` must stay 0600). Dest movers restore as the
-engine UID. Dest user pods still carrying a source `kubernetes.io/hostname`
-pin are deleted so VolSync Direct does not copy that pin onto the mover.
+Dest restic sets `runAsUser` and omits `fsGroup`. Dest pods drop
+`fsGroup: 0`, and Postgres drops any `fsGroup`, so kubelet does not OR
+`0660` onto restored files when the app mounts (`server.key` must stay
+0600). VolSync Direct pins a mover from `spec.nodeName` of the dest pod
+that mounts the PVC (not from the ReplicationDestination). Replicate
+deletes dest pods and mover Jobs whose hostname is not a Ready dest node.
 
 | Signal | Class |
 |---|---|

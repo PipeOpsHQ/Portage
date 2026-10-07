@@ -21,6 +21,7 @@ package heal
 import (
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/transform"
 )
 
@@ -30,6 +31,9 @@ const (
 	StripNodeAffinity = "strip-node-affinity"
 	StripZoneLabels   = "strip-zone-labels"
 	BindPVCByName     = "bind-pvc-by-name"
+	// StripRootFSGroup drops a dest fsGroup that makes kubelet OR 0660 onto
+	// every restored file. Postgres then rejects server.key (must be 0600).
+	StripRootFSGroup = "strip-root-fsgroup"
 )
 
 // PVC strips cluster-local pins and remaps StorageClass. Returns healer names applied.
@@ -96,7 +100,48 @@ func PodSpec(spec *corev1.PodSpec) []string {
 	if n := filterPodTolerations(spec); n > 0 {
 		out = append(out, StripNodeAffinity)
 	}
+	if stripVolumeFSGroup(spec) {
+		out = append(out, StripRootFSGroup)
+	}
 	return unique(out)
+}
+
+// stripVolumeFSGroup removes fsGroup values that make kubelet rewrite
+// restored modes. fsGroup 0 (root) does this on every engine. Any fsGroup
+// on Postgres does it to server.key, which must stay 0600 when owned by
+// the database user. The walk runs at pod mount, after restic has written
+// the archived mode, so the mover's securityContext is not the only path.
+func stripVolumeFSGroup(spec *corev1.PodSpec) bool {
+	if spec == nil || spec.SecurityContext == nil || spec.SecurityContext.FSGroup == nil {
+		return false
+	}
+	if *spec.SecurityContext.FSGroup != 0 && !postgresPod(spec) {
+		return false
+	}
+	spec.SecurityContext.FSGroup = nil
+	return true
+}
+
+func postgresPod(spec *corev1.PodSpec) bool {
+	if spec == nil {
+		return false
+	}
+	for _, c := range spec.InitContainers {
+		if postgresImage(c.Image) {
+			return true
+		}
+	}
+	for _, c := range spec.Containers {
+		if postgresImage(c.Image) {
+			return true
+		}
+	}
+	return false
+}
+
+func postgresImage(image string) bool {
+	eng, ok := classify.MatchImage(image)
+	return ok && eng.Name == "postgres"
 }
 
 func filterPodTolerations(spec *corev1.PodSpec) int {
