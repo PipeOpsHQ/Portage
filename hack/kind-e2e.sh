@@ -11,16 +11,16 @@ STORE=/tmp/portage-e2e-store
 LOG=/tmp/portage-controller.log
 CTRL_PID=""
 PASSES=0
-MINIO_CID=""
+S3_CID=""
 PG_NODEPORT=30432
-# Docker Hub no longer publishes minio/minio (pull access denied). Quay is
-# the documented image; pin a last community release for CI reproducibility.
-MINIO_IMAGE="${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z}"
-MC_IMAGE="${MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z}"
+# quay.io/minio and Docker Hub minio/minio are no longer anonymously
+# pullable (401 since ~2026-09-24). SeaweedFS weed mini is the S3 stand-in:
+# same bucket and keys, S3 on :9000 so movers keep the existing endpoint.
+S3_IMAGE="${S3_IMAGE:-chrislusf/seaweedfs:4.48}"
 
 cleanup() {
   if [[ -n "${CTRL_PID}" ]]; then kill "${CTRL_PID}" 2>/dev/null || true; fi
-  if [[ -n "${MINIO_CID}" ]]; then docker rm -f portage-minio 2>/dev/null || true; fi
+  if [[ -n "${S3_CID}" ]]; then docker rm -f portage-s3 2>/dev/null || true; fi
   kind delete cluster --name "$SRC" 2>/dev/null || true
   kind delete cluster --name "$DST" 2>/dev/null || true
 }
@@ -106,6 +106,7 @@ need kind
 need kubectl
 need go
 need docker
+need curl
 
 kind delete cluster --name "$SRC" 2>/dev/null || true
 kind delete cluster --name "$DST" 2>/dev/null || true
@@ -150,35 +151,44 @@ SRC_IP="$(kind_net_ip "${SRC}-control-plane")"
 if [[ -z "$SRC_IP" || "$SRC_IP" == "<no value>" ]]; then
   die "kind src node has no kind-network IP"
 fi
-# Share the src node's netns so MinIO listens on SRC_IP:9000. Src and dest
+# Share the src node's netns so S3 listens on SRC_IP:9000. Src and dest
 # mover pods reach that address via the kind network (CNI overlay cannot hit
 # a sibling docker container IP; host:9000 hairpins on GHA).
-docker rm -f portage-minio 2>/dev/null || true
-docker pull "$MINIO_IMAGE"
-docker pull "$MC_IMAGE"
-docker run -d --name portage-minio --network "container:${SRC}-control-plane" \
-  -e MINIO_ROOT_USER=portage \
-  -e MINIO_ROOT_PASSWORD=portageportage \
-  "$MINIO_IMAGE" server /data
-MINIO_CID=portage-minio
-mc_ok=0
-for _ in $(seq 1 20); do
-  if docker run --rm --network "container:${SRC}-control-plane" --entrypoint /bin/sh "$MC_IMAGE" -c \
-    "mc alias set m http://127.0.0.1:9000 portage portageportage && mc mb -p m/portage" \
-    >/dev/null 2>&1; then
-    mc_ok=1
+# Drop WebDAV, Admin, Iceberg, and Lance so those listeners do not collide
+# with the kind node. An unauthenticated GET is 403 once S3 is up; curl -f
+# would treat that as failure. The bucket log is the create confirmation.
+docker rm -f portage-s3 2>/dev/null || true
+docker pull "$S3_IMAGE"
+S3_CID=portage-s3
+docker run -d --name portage-s3 --network "container:${SRC}-control-plane" \
+  -e AWS_ACCESS_KEY_ID=portage \
+  -e AWS_SECRET_ACCESS_KEY=portageportage \
+  -e S3_BUCKET=portage \
+  "$S3_IMAGE" mini -dir=/data -s3.port=9000 \
+  -webdav=false -admin.ui=false \
+  -s3.port.iceberg=0 -s3.port.lance=0 \
+  -master.telemetry=false
+s3_ok=0
+for _ in $(seq 1 40); do
+  if ! docker inspect -f '{{.State.Running}}' portage-s3 2>/dev/null | grep -qx true; then
+    docker logs portage-s3 >&2 || true
+    die "s3 container exited before :9000 was up"
+  fi
+  code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "http://${SRC_IP}:9000/" || true)
+  if [[ "$code" != "000" && -n "$code" ]] && docker logs portage-s3 2>&1 | grep -q 'created bucket portage'; then
+    s3_ok=1
     break
   fi
   sleep 2
 done
-[[ "$mc_ok" == "1" ]] || die "minio never accepted mc on src node :9000"
+[[ "$s3_ok" == "1" ]] || { docker logs portage-s3 >&2 || true; die "s3 never became ready on src node :9000"; }
 export PORTAGE_S3_ENDPOINT="http://${SRC_IP}:9000"
 export PORTAGE_S3_ACCESS_KEY=portage
 export PORTAGE_S3_SECRET_KEY=portageportage
 export PORTAGE_S3_BUCKET=portage
 export PORTAGE_VOLSYNC_SCHEDULE="* * * * *"
 KIND_GW="$SRC_IP"
-echo "  minio endpoint ${PORTAGE_S3_ENDPOINT} src node ${SRC_IP}"
+echo "  s3 endpoint ${PORTAGE_S3_ENDPOINT} src node ${SRC_IP}"
 
 if command -v helm >/dev/null; then
   helm repo add backube https://backube.github.io/helm-charts/ >/dev/null

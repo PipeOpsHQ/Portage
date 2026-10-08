@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- Kind e2e serves S3 with SeaweedFS `weed mini` (`chrislusf/seaweedfs:4.48`)
+  on the src kind node. `quay.io/minio/minio` and `quay.io/minio/mc` return
+  401 to anonymous pulls, which failed the kind job before any check ran.
 - Dest workloads drop `fsGroup: 0`, and Postgres drops any `fsGroup`.
   Kubelet ORs `0660` onto the volume when the dest pod mounts, which is
   after restic has written `server.key` as `0600`. Clearing it only on

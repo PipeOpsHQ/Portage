@@ -21,10 +21,10 @@ make e2e
 | Cutover freeze | source replicas **0**, dest STS still present |
 
 CI: `.github/workflows/e2e.yaml` (40 minute timeout). Snapshot CRDs + Helm VolSync.
-MinIO shares the source kind node's netns (`SRC_IP:9000`) so mover pods on both
-clusters can reach it. Images come from `quay.io/minio/minio` (Docker Hub no
-longer serves `minio/minio`). `ClusterPair.spec.source.address` is dest→source WAL
-(NodePort on the src kind node).
+The S3 endpoint shares the source kind node's netns (`SRC_IP:9000`) so mover pods
+on both clusters can reach it. CI runs `chrislusf/seaweedfs` (`weed mini`) because
+`quay.io/minio` and Docker Hub `minio/minio` are no longer anonymously pullable.
+`ClusterPair.spec.source.address` is dest→source WAL (NodePort on the src kind node).
 
 The PVC check fails if a ReplicationSource `sourcePVC` starts with `volsync-`.
 VolSync cache volumes (`volsync-src-*`, `volsync-dst-*`, legacy
