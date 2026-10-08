@@ -29,8 +29,9 @@ Azure Entra ID, AWS IAM, or GCP ADC (or empty = this hub cluster).
 
 ## Kind e2e
 
-See [E2e](e2e.md). `make e2e` runs the product checks (usefulness, dest probe,
-replayed rows, PVC dest bytes, cutover freeze).
+See [E2e](e2e.md). `make e2e` runs the product checks on two kind clusters
+against a SeaweedFS bucket on the source node (usefulness, dest probe,
+replayed rows, cluster objects, PVC dest bytes, cutover freeze).
 
 ## Samples
 

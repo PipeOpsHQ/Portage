@@ -209,7 +209,7 @@ Operational pieces now in-tree:
 - SigV4 S3 (`objectstore.NewS3` / AWS_* + PORTAGE_S3_*)
 - VolSync `rclone.conf` + rsyncTLS PSK secrets (not rotated)
 - Postgres `CREATE ROLE replicator`, source Service, dest `pg_basebackup` Job, STS standby mount
-- `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters: classify, useless backup fails, useful dump stored, dest restore with `pg_isready` + replayed rows, cutover freezes source)
+- `hack/kind-e2e.sh` + `.github/workflows/e2e.yaml` (two kind clusters and SeaweedFS `weed mini` on the src node: classify, useless backup fails, useful dump stored, dest restore with `pg_isready` + replayed rows, cluster objects, PVC dest bytes, cutover freezes source)
 
 Helm: `volsync.enabled=true` pulls the Backube chart.
 

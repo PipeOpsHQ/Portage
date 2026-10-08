@@ -7,6 +7,11 @@
 - `Policy.spec.clusterObjects.excludeGVKs` skips matching CRDs and CRs
   (Gateway API experimental channel, dest admission, version skew).
 
+### Docs
+
+- Kind e2e documents SeaweedFS `weed mini` as the CI object store
+  (`S3_IMAGE`, bucket, and keys). Cutover no longer points at `E2E_FULL`.
+
 ### Fixed
 
 - Kind e2e serves S3 with SeaweedFS `weed mini` (`chrislusf/seaweedfs:4.48`)

@@ -6,7 +6,7 @@
 - `kubectl`, Go 1.24+ (for building from source)
 - CSI snapshot controller if you use VolumeSnapshots
 - Optional: [VolSync](https://volsync.readthedocs.io/) on source and dest
-- Optional: S3-compatible bucket (MinIO, R2, AWS)
+- Optional: S3-compatible bucket (SeaweedFS, MinIO, R2, AWS)
 
 ## CRDs + controller
 
@@ -49,7 +49,7 @@ Controller binary is `/controller` in the image (`cmd/controller`).
 | Variable | Purpose |
 |---|---|
 | `PORTAGE_STORE_DIR` | Filesystem/PVC dump store |
-| `PORTAGE_S3_ENDPOINT` | MinIO/R2/AWS-compatible endpoint |
+| `PORTAGE_S3_ENDPOINT` | Path-style S3 endpoint (SeaweedFS, MinIO, R2, AWS) |
 | `PORTAGE_S3_BUCKET` | Bucket |
 | `PORTAGE_S3_PREFIX` | Key prefix |
 | `AWS_ACCESS_KEY_ID` / `PORTAGE_S3_ACCESS_KEY` | SigV4 |

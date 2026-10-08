@@ -62,8 +62,8 @@ When `clusterObjects.enabled` is set, each reconcile live-lists source and
 create-or-update dest. That is active restoration for ConfigMaps, Secrets,
 Services, RBAC, CRDs, and unknown CRs.
 
-Install VolSync on both clusters (Helm subchart `volsync.enabled=true` or
-`E2E_FULL=1 bash hack/kind-e2e.sh`).
+Install VolSync on both clusters (Helm subchart `volsync.enabled=true`, or
+`make e2e`, which installs the Backube chart when `helm` is on `PATH`).
 
 ## Cutover
 
