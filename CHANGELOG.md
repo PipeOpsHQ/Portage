@@ -14,6 +14,17 @@
 
 ### Fixed
 
+- Dest restic pauses while a Running user pod mounts the PVC, and the
+  mover Job is deleted. Direct copyMethod was restoring source PGDATA,
+  including `postmaster.pid`, under the live postmaster.
+- A logical dump is replayed once per Restore Action. A later reconcile
+  that is still `Rehydrating` does not exec `psql` again.
+- ReplicationSource and ReplicationDestination are deleted when the source
+  PVC is gone, and leftover Portage pairs are pruned when the workload
+  leaves the inventory.
+- `replicate.enabled: false` deletes the live Replicate Action. The Action
+  worker runs four reconciles at a time, and a new Action is marked
+  `Pending` as soon as it is picked up.
 - Kind e2e serves S3 with SeaweedFS `weed mini` (`chrislusf/seaweedfs:4.48`)
   on the src kind node. `quay.io/minio/minio` and `quay.io/minio/mc` return
   401 to anonymous pulls, which failed the kind job before any check ran.

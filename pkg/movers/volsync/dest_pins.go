@@ -195,6 +195,55 @@ func isVolSyncMoverJob(name string) bool {
 	return strings.HasPrefix(name, "volsync-src-") || strings.HasPrefix(name, "volsync-dst-")
 }
 
+// destUserMounted is true when a Running pod other than a VolSync mover
+// mounts pvc. Pending pods have not attached the volume yet, so a restore
+// can still finish. Once the workload is Running, another Direct mover on
+// the same node rewrites the live filesystem.
+func destUserMounted(ctx context.Context, kube kubernetes.Interface, ns, pvc string) bool {
+	if kube == nil || ns == "" || pvc == "" {
+		return false
+	}
+	pods, err := kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if isVolSyncMoverJob(p.Name) || p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, v := range p.Spec.Volumes {
+			if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == pvc {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// deleteWorkloadMoverJobs removes VolSync mover Jobs for one ReplicationSource
+// name (portage-<workload>) so an in-flight restic restore cannot finish
+// after the destination is paused.
+func deleteWorkloadMoverJobs(ctx context.Context, kube kubernetes.Interface, ns, rsName string) {
+	if kube == nil || ns == "" || rsName == "" {
+		return
+	}
+	jobs, err := kube.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return
+	}
+	bg := metav1.DeletePropagationBackground
+	for i := range jobs.Items {
+		j := &jobs.Items[i]
+		if !isVolSyncMoverJob(j.Name) {
+			continue
+		}
+		if strings.Contains(j.Name, rsName+"-") || strings.HasSuffix(j.Name, rsName) {
+			_ = kube.BatchV1().Jobs(ns).Delete(ctx, j.Name, metav1.DeleteOptions{PropagationPolicy: &bg})
+		}
+	}
+}
+
 func (m Mover) destMoverPinMessage(ctx context.Context, ns string) string {
 	if !m.remoteDest() {
 		return ""

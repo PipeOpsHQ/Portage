@@ -40,7 +40,11 @@ kubectl -n tenant-a get action backup-1 -w
 3. Apply to **dest** (PVC first, then STS/Deploy) using the ClusterPair dest
    client (kubeconfig or cloud identity) — not the hub cache.
 4. Rehydrate: PVC-from-snapshot **by original name**, or replay dump via `psql`
-   stdin. Dump apply runs **once** (re-psql every reconcile hangs exec).
+   stdin. A successful replay is recorded on the Action
+   (`portage.io/dump-applied`) and is not exec'd again, including while the
+   Action is still `Rehydrating`. Re-psql against a live database hangs exec
+   and is not idempotent. Dest restic stays paused while that pod is Running
+   so the mover cannot rewrite `postmaster.pid`.
 5. Heal Pending topology/SC.
 6. Wait Ready + `pg_isready` (or class probe). Empty dest Postgres that is Ready
    is **not** a restore until the dump lands. **Never Succeeded without that.**

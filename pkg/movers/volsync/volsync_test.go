@@ -256,7 +256,10 @@ func TestResticPrivilegedMoversWhenFSGroupZero(t *testing.T) {
 		srcGVR: "ReplicationSourceList",
 		dstGVR: "ReplicationDestinationList",
 	})
-	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	kube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
 	zero := int64(0)
 	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}, FSGroup: &zero}
@@ -278,7 +281,10 @@ func TestResticPrivilegedMoversWhenNoFSGroup(t *testing.T) {
 		srcGVR: "ReplicationSourceList",
 		dstGVR: "ReplicationDestinationList",
 	})
-	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	kube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
 	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
 	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
@@ -299,7 +305,10 @@ func TestResticNoPrivilegedMoversWhenFSGroupSet(t *testing.T) {
 		srcGVR: "ReplicationSourceList",
 		dstGVR: "ReplicationDestinationList",
 	})
-	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	kube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
 	fs := int64(999)
 	m := Mover{Dynamic: dyn, Kube: kube, Transport: portagev1alpha1.TransportObjectStore}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}, FSGroup: &fs}
@@ -348,7 +357,9 @@ func TestResticPrivilegedMoversOnDestNamespace(t *testing.T) {
 
 func TestDestDynNilWhenRemoteWithoutDestDynamic(t *testing.T) {
 	t.Parallel()
-	srcKube := k8sfake.NewSimpleClientset()
+	srcKube := k8sfake.NewSimpleClientset(
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: "ns"}},
+	)
 	dstKube := k8sfake.NewSimpleClientset()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		srcGVR: "ReplicationSourceList",
@@ -568,5 +579,163 @@ func TestStripDestSchedulingRemovesSourceHostname(t *testing.T) {
 	}
 	if strings.Contains(probe.Message, "source-only node") {
 		t.Fatalf("deleted pin must not remain in probe: %s", probe.Message)
+	}
+}
+
+func TestReplicatePausesWhenDestPodIsRunning(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	srcDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dstDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	srcKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: "ns"}},
+	)
+	dstKube := k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-0", Namespace: "ns"},
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+				Name: "data",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"},
+				},
+			}}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "volsync-dst-portage-pg-abc", Namespace: "ns"},
+			Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+				Name: "data",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"},
+				},
+			}}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "volsync-dst-portage-pg-abc", Namespace: "ns"}},
+	)
+	m := Mover{
+		Dynamic: srcDyn, DestDynamic: dstDyn,
+		Kube: srcKube, DestKube: dstKube,
+		Transport: portagev1alpha1.TransportObjectStore,
+	}
+	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := dstDyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, _, _ := unstructured.NestedBool(rd.Object, "spec", "paused")
+	if !paused {
+		t.Fatal("dest restic must pause while a user pod is Running on the PVC")
+	}
+	if _, err := dstKube.BatchV1().Jobs("ns").Get(context.Background(), "volsync-dst-portage-pg-abc", metav1.GetOptions{}); err == nil {
+		t.Fatal("in-flight dest mover job must be deleted so it cannot rewrite postmaster.pid")
+	}
+}
+
+func TestReplicateDropsPairWhenSourcePVCIsGone(t *testing.T) {
+	t.Parallel()
+	kinds := map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	}
+	srcDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	dstDyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
+	rs := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationSource",
+		"metadata": map[string]any{
+			"name": "portage-postgres-data-hidden-surf-0", "namespace": "ns",
+			"labels": map[string]any{"portage.io/name": "postgres-data-hidden-surf-0"},
+		},
+		"spec": map[string]any{"sourcePVC": "postgres-data-hidden-surf-0"},
+	}}
+	rd := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationDestination",
+		"metadata": map[string]any{
+			"name": "portage-postgres-data-hidden-surf-0", "namespace": "ns",
+			"labels": map[string]any{"portage.io/name": "postgres-data-hidden-surf-0"},
+		},
+	}}
+	if _, err := srcDyn.Resource(srcGVR).Namespace("ns").Create(context.Background(), rs, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dstDyn.Resource(dstGVR).Namespace("ns").Create(context.Background(), rd, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	m := Mover{
+		Dynamic: srcDyn, DestDynamic: dstDyn,
+		Kube:      k8sfake.NewSimpleClientset(),
+		DestKube:  k8sfake.NewSimpleClientset(),
+		Transport: portagev1alpha1.TransportObjectStore,
+	}
+	w := classify.Workload{
+		Namespace: "ns", Name: "postgres-data-hidden-surf-0", Kind: "PersistentVolumeClaim",
+		PVCNames: []string{"postgres-data-hidden-surf-0"},
+	}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srcDyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), rs.GetName(), metav1.GetOptions{}); err == nil {
+		t.Fatal("ReplicationSource must be deleted when the source PVC is gone")
+	}
+	if _, err := dstDyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), rd.GetName(), metav1.GetOptions{}); err == nil {
+		t.Fatal("ReplicationDestination must be deleted when the source PVC is gone")
+	}
+}
+
+func TestPruneRemovesReplicationForDeletedWorkload(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	for _, name := range []string{"gone", "live"} {
+		obj := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationSource",
+			"metadata": map[string]any{
+				"name": "portage-" + name, "namespace": "ns",
+				"labels": map[string]any{"portage.io/name": name},
+			},
+			"spec": map[string]any{"sourcePVC": name},
+		}}
+		if _, err := dyn.Resource(srcGVR).Namespace("ns").Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		dst := obj.DeepCopy()
+		dst.SetKind("ReplicationDestination")
+		dst.SetAPIVersion("volsync.backube/v1alpha1")
+		if _, err := dyn.Resource(dstGVR).Namespace("ns").Create(context.Background(), dst, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	foreign := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "volsync.backube/v1alpha1", "kind": "ReplicationSource",
+		"metadata": map[string]any{"name": "someone-else", "namespace": "ns"},
+	}}
+	if _, err := dyn.Resource(srcGVR).Namespace("ns").Create(context.Background(), foreign, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	kube := k8sfake.NewSimpleClientset(
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "live", Namespace: "ns"}},
+	)
+	m := Mover{Dynamic: dyn, Kube: kube}
+	if err := m.Prune(context.Background(), "ns", map[string]struct{}{"live": {}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-gone", metav1.GetOptions{}); err == nil {
+		t.Fatal("pair for a deleted workload must be pruned")
+	}
+	if _, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-live", metav1.GetOptions{}); err != nil {
+		t.Fatal("live workload pair must stay")
+	}
+	if _, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "someone-else", metav1.GetOptions{}); err != nil {
+		t.Fatal("unlabeled ReplicationSource must stay")
 	}
 }

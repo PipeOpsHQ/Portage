@@ -140,6 +140,20 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 	if len(w.PVCNames) == 0 {
 		return nil
 	}
+	pvc := firstDataPVC(w.PVCNames)
+	name := "portage-" + w.Name
+	if pvc == "" {
+		return m.protectCaches(ctx, w.Namespace)
+	}
+	// A deleted workload's PVC must not keep a ReplicationSource. Walk
+	// still names a claim from a StatefulSet template until the claim is
+	// gone; NotFound means there is nothing to sync.
+	if missing, err := m.sourcePVCMissing(ctx, w.Namespace, pvc); err != nil {
+		return err
+	} else if missing {
+		m.deletePair(ctx, w.Namespace, name)
+		return nil
+	}
 	path := m.objectPath(w)
 	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, path); err != nil {
 		return fmt.Errorf("volsync source secrets: %w", err)
@@ -171,11 +185,6 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		}
 		m.stripDestScheduling(ctx, w.Namespace)
 	}
-	pvc := firstDataPVC(w.PVCNames)
-	if pvc == "" {
-		return m.protectCaches(ctx, w.Namespace)
-	}
-	name := "portage-" + w.Name
 	dstClient := m.destDyn()
 	if dstClient == nil {
 		return fmt.Errorf("volsync: dest dynamic client required")
@@ -189,10 +198,80 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return fmt.Errorf("volsync source: %w", err)
 	}
 	dst := m.destination(w, name)
+	// A Running user pod already mounts this PVC (Restore brought Postgres
+	// up). Direct copyMethod schedules the mover onto that same node, so
+	// the next restic restore rewrites PGDATA, including postmaster.pid,
+	// under the live postmaster. Pause and delete the in-flight mover.
+	if destUserMounted(ctx, m.destKube(), w.Namespace, pvc) {
+		_ = unstructured.SetNestedField(dst.Object, true, "spec", "paused")
+		deleteWorkloadMoverJobs(ctx, m.destKube(), w.Namespace, name)
+	}
 	if err := applyNamespaced(ctx, dstClient, dstGVR, dst); err != nil {
 		return fmt.Errorf("volsync destination: %w", err)
 	}
 	return m.protectCaches(ctx, w.Namespace)
+}
+
+// sourcePVCMissing is true when the source claim is gone. A nil kube client
+// cannot check, so callers proceed (unit tests without a typed client).
+func (m Mover) sourcePVCMissing(ctx context.Context, ns, pvc string) (bool, error) {
+	if m.Kube == nil || ns == "" || pvc == "" {
+		return false, nil
+	}
+	_, err := m.Kube.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvc, metav1.GetOptions{})
+	if err == nil {
+		return false, nil
+	}
+	if errors.IsNotFound(err) {
+		return true, nil
+	}
+	return false, fmt.Errorf("volsync source pvc %s/%s: %w", ns, pvc, err)
+}
+
+// deletePair removes the Portage ReplicationSource and ReplicationDestination
+// for one workload. Missing objects are ignored.
+func (m Mover) deletePair(ctx context.Context, ns, name string) {
+	if ns == "" || name == "" {
+		return
+	}
+	if m.Dynamic != nil {
+		_ = m.Dynamic.Resource(srcGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	}
+	if dst := m.destDyn(); dst != nil {
+		_ = dst.Resource(dstGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	}
+}
+
+// Prune deletes Portage VolSync pairs in ns that are not in keep (workload
+// name → present) or whose source PVC no longer exists. CRs without
+// portage.io/name are left alone.
+func (m Mover) Prune(ctx context.Context, ns string, keep map[string]struct{}) error {
+	if m.Dynamic == nil || ns == "" {
+		return nil
+	}
+	list, err := m.Dynamic.Resource(srcGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for i := range list.Items {
+		item := &list.Items[i]
+		owner := item.GetLabels()["portage.io/name"]
+		if owner == "" {
+			continue
+		}
+		if _, ok := keep[owner]; ok {
+			pvc, _, _ := unstructured.NestedString(item.Object, "spec", "sourcePVC")
+			missing, err := m.sourcePVCMissing(ctx, ns, pvc)
+			if err != nil {
+				return err
+			}
+			if !missing {
+				continue
+			}
+		}
+		m.deletePair(ctx, ns, item.GetName())
+	}
+	return nil
 }
 
 // scrubMisplaced drops CRs that a bad reconcile (dest=source fallback or

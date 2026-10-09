@@ -38,6 +38,7 @@ import (
 	"github.com/PipeOpsHQ/portage/pkg/classify"
 	"github.com/PipeOpsHQ/portage/pkg/clusters"
 	"github.com/PipeOpsHQ/portage/pkg/kubeexec"
+	"github.com/PipeOpsHQ/portage/pkg/objectstore"
 )
 
 func TestRestoreDoesNotSucceedWhenPgIsReadyFails(t *testing.T) {
@@ -65,6 +66,78 @@ func TestRestoreSucceedsAfterPgIsReady(t *testing.T) {
 	if got.Status.Attestation == nil {
 		t.Fatal("expected attestation")
 	}
+}
+
+func TestRestoreAppliesLogicalDumpOnce(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	const key = "ns/StatefulSet/pg/dump.sql"
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec:       portagev1alpha1.PolicySpec{Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}}},
+		Status: portagev1alpha1.PolicyStatus{Artifacts: []portagev1alpha1.ArtifactHealth{{
+			Workload:   "ns/StatefulSet/pg",
+			Useful:     true,
+			ArtifactID: key,
+			SizeBytes:  2 << 20,
+		}}},
+	}
+	act := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: "ns"},
+		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionRestore, PolicyRef: "p"},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Action{}, &portagev1alpha1.Policy{}).
+		WithObjects(pol, act).Build()
+	exec := &kubeexec.Fake{Results: map[string]kubeexec.Result{"ns/pg-0": {Stdout: "accepting connections\n"}}}
+	store := &objectstore.Memory{}
+	if err := store.Put(context.Background(), key, []byte("SELECT 1;\n")); err != nil {
+		t.Fatal(err)
+	}
+	r := &ActionReconciler{
+		Client: c,
+		Scheme: scheme,
+		Kube:   k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
+		Exec:   exec,
+		Store:  store,
+		Now:    func() time.Time { return time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC) },
+	}
+	nn := types.NamespacedName{Name: "restore", Namespace: "ns"}
+	drain(t, r, nn)
+	got := getAction(t, r, nn)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatalf("phase=%s message=%s", got.Status.Phase, got.Status.Message)
+	}
+	if !dumpApplied(got, "ns/StatefulSet/pg") {
+		t.Fatalf("dump replay was not recorded: %v", got.Annotations)
+	}
+	n := psqlCalls(exec)
+	if n != 1 {
+		t.Fatalf("psql calls=%d want 1", n)
+	}
+	// Status update can fail after a successful psql. The Action is still
+	// Rehydrating, which used to exec the dump again and race the live postmaster.
+	got.Status.Phase = portagev1alpha1.ActionPhaseRehydrating
+	got.Status.CompletionTime = nil
+	if err := r.Status().Update(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: nn}); err != nil {
+		t.Fatal(err)
+	}
+	if again := psqlCalls(exec); again != 1 {
+		t.Fatalf("psql calls=%d want 1 after a second Rehydrating reconcile", again)
+	}
+}
+
+func psqlCalls(exec *kubeexec.Fake) int {
+	n := 0
+	for _, c := range exec.Calls {
+		if strings.Contains(c, "psql") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestRestoreFailsPreflightWithoutUsefulBackup(t *testing.T) {

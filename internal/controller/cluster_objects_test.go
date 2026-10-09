@@ -313,7 +313,10 @@ func objectGraphClients(t *testing.T, objs ...runtime.Object) (*k8sfake.Clientse
 			{Name: "pods", Namespaced: true, Kind: "Pod", Verbs: []string{"list", "get", "create"}},
 		},
 	}}
-	dyn := dynfake.NewSimpleDynamicClient(scheme, objs...)
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		{Group: "volsync.backube", Version: "v1alpha1", Resource: "replicationsources"}:      "ReplicationSourceList",
+		{Group: "volsync.backube", Version: "v1alpha1", Resource: "replicationdestinations"}: "ReplicationDestinationList",
+	}, objs...)
 	return kube, dyn
 }
 

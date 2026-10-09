@@ -138,6 +138,7 @@ func TestReplicateProtectsDestCachePVCs(t *testing.T) {
 	cache := "volsync-portage-hidden-surf-adequate-knov-beta-cache"
 	srcKube := k8sfake.NewSimpleClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-pg-0", Namespace: ns}},
 	)
 	dstKube := k8sfake.NewSimpleClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},

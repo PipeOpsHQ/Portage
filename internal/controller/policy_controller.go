@@ -47,7 +47,7 @@ type PolicyReconciler struct {
 	Now     func() time.Time
 }
 
-// +kubebuilder:rbac:groups=portage.io,resources=actions,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=portage.io,resources=actions,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=portage.io,resources=policies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=portage.io,resources=policies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=portage.io,resources=policies/finalizers,verbs=update
@@ -221,11 +221,25 @@ func (r *PolicyReconciler) maybeBackup(ctx context.Context, pol *portagev1alpha1
 
 // maybeReplicate ensures one long-lived Replicate Action while
 // spec.replicate.enabled. The Action stays CatchingUp and live-syncs dest.
+// Turning the flag off deletes that Action. Leaving it running is why a
+// "paused" replica kept reconciling and held the Action worker.
 func (r *PolicyReconciler) maybeReplicate(ctx context.Context, pol *portagev1alpha1.Policy) error {
-	if !pol.Spec.Replicate.Enabled {
-		return nil
-	}
 	name := replicateName(pol.Name)
+	if !pol.Spec.Replicate.Enabled {
+		existing := &portagev1alpha1.Action{}
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pol.Namespace}, existing)
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// A hand-written Replicate Action with the same name is left alone.
+		if existing.Labels["portage.io/live-replica"] != "true" {
+			return nil
+		}
+		return r.Delete(ctx, existing)
+	}
 	existing := &portagev1alpha1.Action{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pol.Namespace}, existing)
 	if err == nil {

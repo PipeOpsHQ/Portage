@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
@@ -172,6 +173,14 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	if err := r.Get(ctx, types.NamespacedName{Name: act.Spec.PolicyRef, Namespace: act.Namespace}, pol); err != nil {
 		return r.fail(ctx, act, "policy: "+err.Error())
+	}
+	if act.Status.Phase == "" {
+		act.Status.Phase = portagev1alpha1.ActionPhasePending
+		act.Status.Message = "pending"
+		if err := r.Status().Update(ctx, act); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("reconcile action", "type", act.Spec.Type, "phase", act.Status.Phase)
 	}
 
 	pair, err := r.loadPair(ctx, pol)
@@ -498,12 +507,22 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 				// reconcile hangs dest exec (stdin never finishes).
 			default:
 				// Logical dump must land. Empty dest postgres is Ready+pg_isready.
+				// A successful replay is recorded on the Action. The next
+				// reconcile of a still-Rehydrating Action must not exec psql
+				// again: a dropped exec session leaves the remote psql running,
+				// and a second full replay is what operators see as a retry
+				// against an already-restored database.
+				if dumpApplied(act, w.Key()) {
+					break
+				}
 				ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w)
 				if !ready {
 					rehydrated = false
 				} else if rerr := dump.Apply(ctx, ep.Dest.Kube, ep.Dest.Exec, r.store(), w, a.ArtifactID); rerr != nil {
 					rehydrated = false
 					facts.UsefulMessage[w.Key()] = rerr.Error()
+				} else if err := r.rememberDumpApplied(ctx, act, w.Key()); err != nil {
+					return restore.Result{}, err
 				}
 			}
 		} else if len(w.PVCNames) == 0 {
@@ -581,6 +600,7 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 		}
 		workloadsStatus = append(workloadsStatus, st)
 	}
+	r.pruneVolSync(ctx, pol, ep, inv)
 	if act.Spec.DryRun {
 		return restore.Result{Phase: portagev1alpha1.ActionPhaseSucceeded, Message: "dry-run replicate", Workloads: workloadsStatus, Terminal: true}, nil
 	}
@@ -630,6 +650,64 @@ func destStatelessStatus(ctx context.Context, kube kubernetes.Interface, w class
 	st.Ready, st.ProbeOK = true, true
 	st.Message = "dest Ready"
 	return st
+}
+
+// dumpAppliedAnnotation lists workload keys whose logical dump has already
+// been replayed. Newline-separated. A second psql against a live Postgres
+// is not idempotent.
+const dumpAppliedAnnotation = "portage.io/dump-applied"
+
+func dumpApplied(act *portagev1alpha1.Action, key string) bool {
+	if act == nil || key == "" || act.Annotations == nil {
+		return false
+	}
+	for _, line := range strings.Split(act.Annotations[dumpAppliedAnnotation], "\n") {
+		if line == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ActionReconciler) rememberDumpApplied(ctx context.Context, act *portagev1alpha1.Action, key string) error {
+	if act.Annotations == nil {
+		act.Annotations = map[string]string{}
+	}
+	cur := act.Annotations[dumpAppliedAnnotation]
+	if cur == "" {
+		act.Annotations[dumpAppliedAnnotation] = key
+	} else {
+		act.Annotations[dumpAppliedAnnotation] = cur + "\n" + key
+	}
+	return r.Update(ctx, act)
+}
+
+func (r *ActionReconciler) pruneVolSync(ctx context.Context, pol *portagev1alpha1.Policy, ep clusters.Pair, inv classify.Inventory) {
+	if ep.Source.Dynamic == nil {
+		return
+	}
+	m := volsync.Mover{
+		Dynamic:     ep.Source.Dynamic,
+		DestDynamic: ep.Dest.Dynamic,
+		Kube:        ep.Source.Kube,
+		DestKube:    ep.Dest.Kube,
+	}
+	nss := classify.Namespaces(nil, "")
+	if pol != nil {
+		nss = classify.Namespaces(pol.Spec.Selector.Namespaces, pol.Namespace)
+	}
+	logger := log.FromContext(ctx)
+	for _, ns := range nss {
+		keep := map[string]struct{}{}
+		for _, w := range inv.Workloads {
+			if w.Namespace == ns && len(w.PVCNames) > 0 {
+				keep[w.Name] = struct{}{}
+			}
+		}
+		if err := m.Prune(ctx, ns, keep); err != nil {
+			logger.Error(err, "prune volsync", "namespace", ns)
+		}
+	}
 }
 
 func replicateRequeue(pol *portagev1alpha1.Policy) time.Duration {
@@ -966,7 +1044,10 @@ func (r *ActionReconciler) fail(ctx context.Context, act *portagev1alpha1.Action
 
 // SetupWithManager registers the reconciler.
 func (r *ActionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Replicate reconciles are long (two clusters, object sync). One worker
+	// left new Backup and Restore Actions at phase "" for many minutes.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&portagev1alpha1.Action{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Complete(r)
 }

@@ -133,6 +133,45 @@ func TestReplicateEnabledCreatesLiveAction(t *testing.T) {
 	}
 }
 
+func TestReplicateDisabledDeletesLiveAction(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec:       portagev1alpha1.PolicySpec{Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}}},
+	}
+	live := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "replicate-p",
+			Namespace: "ns",
+			Labels:    map[string]string{"portage.io/live-replica": "true"},
+		},
+		Spec: portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionReplicate, PolicyRef: "p"},
+	}
+	hand := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{Name: "replicate-manual", Namespace: "ns"},
+		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionReplicate, PolicyRef: "p"},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Policy{}, &portagev1alpha1.Action{}).
+		WithObjects(pol, live, hand).Build()
+	r := &PolicyReconciler{
+		Client:     c,
+		Scheme:     scheme,
+		KubeClient: k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "p", Namespace: "ns"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := c.Get(context.Background(), types.NamespacedName{Name: "replicate-p", Namespace: "ns"}, &portagev1alpha1.Action{})
+	if err == nil {
+		t.Fatal("live Replicate Action must be deleted when replicate.enabled is false")
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "replicate-manual", Namespace: "ns"}, &portagev1alpha1.Action{}); err != nil {
+		t.Fatal("a hand-written Replicate Action must stay")
+	}
+}
+
 func TestAutoRestoreSkippedWhenDisabled(t *testing.T) {
 	t.Parallel()
 	scheme := newScheme(t)

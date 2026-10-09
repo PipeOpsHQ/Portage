@@ -35,6 +35,13 @@
   Dest restic does not set `fsGroup`. Dest workloads drop `fsGroup: 0`,
   and Postgres drops any `fsGroup`, so the app pod's mount does not chmod
   restored PGDATA `g+rw` (Postgres requires `server.key` mode 0600).
+  While a Running user pod mounts the dest PVC, the ReplicationDestination
+  is paused and its mover Job is deleted. Direct copyMethod would otherwise
+  schedule the mover onto that same node and overwrite live PGDATA
+  (`postmaster.pid` then contains the source PID).
+  A source PVC that is gone drops its ReplicationSource and
+  ReplicationDestination. Leftover pairs whose workload left the inventory
+  are pruned on the next Replicate reconcile.
 
 `Policy.spec.replicate` syncs data and ancillary objects, not workload
 manifests. Deploying Deployment/StatefulSet specs onto dest is a Restore
@@ -44,7 +51,9 @@ does not reject a RuntimeClass that exists only on source.
 
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`
-keeps one `replicate-<policy>` Action running. A ClusterPair with dest
+keeps one `replicate-<policy>` Action running. Setting `enabled: false` deletes
+that Action so it stops reconciling. A Replicate Action you created yourself,
+without the `portage.io/live-replica` label, is left in place. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
 `fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest restic
