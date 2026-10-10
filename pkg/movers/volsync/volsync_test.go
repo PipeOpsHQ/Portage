@@ -37,6 +37,33 @@ import (
 	"github.com/PipeOpsHQ/portage/pkg/movers"
 )
 
+// replicateUntilDest runs Replicate, and for restic stamps a source snapshot
+// so the destination CR is created. Dest restic is held until lastSyncTime.
+func replicateUntilDest(t *testing.T, m Mover, w classify.Workload) {
+	t.Helper()
+	ctx := context.Background()
+	if err := m.Replicate(ctx, w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	if !m.resticCopy() {
+		return
+	}
+	name := "portage-" + w.Name
+	obj, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedField(obj.Object, "2026-10-09T00:00:00Z", "status", "lastSyncTime"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Dynamic.Resource(srcGVR).Namespace(w.Namespace).Update(ctx, obj, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Replicate(ctx, w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
@@ -46,9 +73,7 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	})
 	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore, DestPath: "s3://bucket/ns/pg"}
 	w := classify.Workload{Namespace: "ns", Name: "pg", Kind: "StatefulSet", PVCNames: []string{"data-pg"}, Class: portagev1alpha1.ClassSQLLogical}
-	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
-		t.Fatal(err)
-	}
+	replicateUntilDest(t, m, w)
 	src, err := dyn.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +115,29 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 	}
 }
 
+func TestReplicateHoldsDestUntilSourceSnapshot(t *testing.T) {
+	t.Parallel()
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		srcGVR: "ReplicationSourceList",
+		dstGVR: "ReplicationDestinationList",
+	})
+	m := Mover{Dynamic: dyn, Transport: portagev1alpha1.TransportObjectStore, DestPath: "s3://bucket/e2e"}
+	w := classify.Workload{Namespace: "files", Name: "data", PVCNames: []string{"data"}}
+	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dyn.Resource(srcGVR).Namespace("files").Get(context.Background(), "portage-data", metav1.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dyn.Resource(dstGVR).Namespace("files").Get(context.Background(), "portage-data", metav1.GetOptions{}); err == nil {
+		t.Fatal("dest restic must wait until the source backup has lastSyncTime")
+	}
+	replicateUntilDest(t, m, w)
+	if _, err := dyn.Resource(dstGVR).Namespace("files").Get(context.Background(), "portage-data", metav1.GetOptions{}); err != nil {
+		t.Fatalf("dest after source snapshot: %v", err)
+	}
+}
+
 func TestReplicateObjectStoreRcloneOverride(t *testing.T) {
 	t.Parallel()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
@@ -121,9 +169,7 @@ func TestReplicateWritesDestCROnDestClient(t *testing.T) {
 	dst := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds)
 	m := Mover{Dynamic: src, DestDynamic: dst, Transport: portagev1alpha1.TransportObjectStore, DestPath: "s3://b/p"}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg"}}
-	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
-		t.Fatal(err)
-	}
+	replicateUntilDest(t, m, w)
 	if _, err := src.Resource(srcGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{}); err != nil {
 		t.Fatalf("source CR: %v", err)
 	}
@@ -226,9 +272,7 @@ func TestDestResticOmitsRootFSGroup(t *testing.T) {
 		Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"},
 		Class: portagev1alpha1.ClassSQLLogical, Engine: "postgres", FSGroup: &zero,
 	}
-	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
-		t.Fatal(err)
-	}
+	replicateUntilDest(t, m, w)
 	dst, err := dyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -624,9 +668,7 @@ func TestReplicatePausesWhenDestPodIsRunning(t *testing.T) {
 		Transport: portagev1alpha1.TransportObjectStore,
 	}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data"}}
-	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
-		t.Fatal(err)
-	}
+	replicateUntilDest(t, m, w)
 	rd, err := dstDyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), "portage-pg", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)

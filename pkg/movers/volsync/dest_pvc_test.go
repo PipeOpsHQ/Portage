@@ -31,7 +31,6 @@ import (
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
-	"github.com/PipeOpsHQ/portage/pkg/movers"
 )
 
 func TestEnsureDestPVCCopiesSizeAndRemapsStorageClass(t *testing.T) {
@@ -102,9 +101,7 @@ func TestReplicateCreatesDestPVCBeforeDestinationCR(t *testing.T) {
 		StorageClassMap: map[string]string{"longhorn": "local-path"},
 	}
 	w := classify.Workload{Namespace: "ns", Name: "pg", PVCNames: []string{"data-pg-0"}}
-	if err := m.Replicate(context.Background(), w, movers.ClusterHandle{}, movers.ClusterHandle{}); err != nil {
-		t.Fatal(err)
-	}
+	replicateUntilDest(t, m, w)
 	if _, err := dstKube.CoreV1().PersistentVolumeClaims("ns").Get(context.Background(), "data-pg-0", metav1.GetOptions{}); err != nil {
 		t.Fatalf("dest PVC must exist before VolSync destinationPVC: %v", err)
 	}

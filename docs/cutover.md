@@ -8,6 +8,10 @@
 - **Generic PVC:** VolSync `ReplicationSource` / `ReplicationDestination`.
   ObjectStore → **restic** (chunked incremental; `portage-restic` secret).
   Dest **schedule-pulls** (a one-shot manual trigger was the live-sync hole).
+  The ReplicationDestination is applied only after the ReplicationSource
+  has `status.lastSyncTime`. Creating both at once makes each mover
+  `restic init` the empty repository, and the second write leaves the
+  key unreadable (`ciphertext verification failed`).
   `copyMethod: Direct` unless `ClusterPair.spec.snapshotClassMap` is set
   (CSI Snapshot). Override `Policy.spec.moverOverrides.GenericPVC: rclone`
   for the old rclone hop. Direct transport → rsyncTLS (`portage-rsync-tls` PSK).

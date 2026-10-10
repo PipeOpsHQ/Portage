@@ -14,6 +14,9 @@
 
 ### Fixed
 
+- Dest restic waits until the ReplicationSource has `lastSyncTime`.
+  Creating both movers together made source and dest `restic init` the
+  same empty repository and damaged the key (`ciphertext verification failed`).
 - Dest restic pauses while a Running user pod mounts the PVC, and the
   mover Job is deleted. Direct copyMethod was restoring source PGDATA,
   including `postmaster.pid`, under the live postmaster.

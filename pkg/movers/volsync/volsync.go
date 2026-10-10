@@ -193,9 +193,25 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return fmt.Errorf("volsync: dest dynamic client is the source cluster; refusing to write ReplicationDestination in-cluster")
 	}
 	m.scrubMisplaced(ctx, w.Namespace, name)
+	// Dest restic also runs `restic init` when the repository is empty.
+	// Doing that at the same time as the source init overwrites config and
+	// keys; every later mover then fails with "ciphertext verification failed".
+	// Wait until the source backup has lastSyncTime, which means init and
+	// the first snapshot finished.
+	synced := true
+	if m.resticCopy() {
+		var err error
+		synced, err = m.sourceHasSnapshot(ctx, w.Namespace, name)
+		if err != nil {
+			return err
+		}
+	}
 	src := m.source(w, name, pvc)
 	if err := applyNamespaced(ctx, m.Dynamic, srcGVR, src); err != nil {
 		return fmt.Errorf("volsync source: %w", err)
+	}
+	if m.resticCopy() && !synced {
+		return m.protectCaches(ctx, w.Namespace)
 	}
 	dst := m.destination(w, name)
 	// A Running user pod already mounts this PVC (Restore brought Postgres
@@ -300,8 +316,36 @@ func applyNamespaced(ctx context.Context, dyn dynamic.Interface, gvr schema.Grou
 	}
 	obj.SetResourceVersion(cur.GetResourceVersion())
 	obj.SetUID(cur.GetUID())
+	// Status is a subresource. Keep it on the object so a fake client
+	// matches the apiserver, which drops status from this update.
+	if st, ok := cur.Object["status"]; ok {
+		obj.Object["status"] = st
+	}
 	_, err = dyn.Resource(gvr).Namespace(ns).Update(ctx, obj, metav1.UpdateOptions{})
 	return err
+}
+
+// resticCopy is the ObjectStore restic path. rclone and rsyncTLS do not
+// init a shared encrypted repository.
+func (m Mover) resticCopy() bool {
+	return m.Transport == portagev1alpha1.TransportObjectStore && m.ObjectMover != "rclone"
+}
+
+// sourceHasSnapshot is true once ReplicationSource.status.lastSyncTime is set.
+// NotFound is not an error: the source CR is created on this same call.
+func (m Mover) sourceHasSnapshot(ctx context.Context, ns, name string) (bool, error) {
+	if m.Dynamic == nil || ns == "" || name == "" {
+		return false, nil
+	}
+	obj, err := m.Dynamic.Resource(srcGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("volsync source sync: %w", err)
+	}
+	s, found, _ := unstructured.NestedString(obj.Object, "status", "lastSyncTime")
+	return found && s != "", nil
 }
 
 func (m Mover) Restore(context.Context, classify.Workload, movers.Artifact, movers.ClusterHandle) error {
