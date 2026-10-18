@@ -96,6 +96,67 @@ func TestObjectStripsNodeAffinityAndStatus(t *testing.T) {
 	}
 }
 
+func TestObjectStripsFSGroupBeforeFirstPod(t *testing.T) {
+	t.Parallel()
+	pg := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "pg"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"securityContext": map[string]any{"fsGroup": float64(999), "runAsUser": float64(999)},
+					"containers":      []any{map[string]any{"name": "postgres", "image": "bitnami/postgresql:16"}},
+				},
+			},
+		},
+	}}
+	Object(pg, Options{})
+	sc, found, _ := unstructured.NestedMap(pg.Object, "spec", "template", "spec", "securityContext")
+	if !found {
+		t.Fatal("runAsUser must stay")
+	}
+	if _, ok := sc["fsGroup"]; ok {
+		t.Fatalf("postgres fsGroup must be stripped before the first mount: %#v", sc)
+	}
+	if _, ok := sc["runAsUser"]; !ok {
+		t.Fatal("runAsUser must stay")
+	}
+
+	redis := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "redis"},
+		"spec": map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"securityContext": map[string]any{"fsGroup": int64(999)},
+					"containers":      []any{map[string]any{"name": "redis", "image": "redis:7"}},
+				},
+			},
+		},
+	}}
+	Object(redis, Options{})
+	got, found, _ := unstructured.NestedFieldNoCopy(redis.Object, "spec", "template", "spec", "securityContext", "fsGroup")
+	if !found || got != int64(999) {
+		t.Fatalf("redis fsGroup=%v found=%v", got, found)
+	}
+
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"name": "files"},
+		"spec": map[string]any{
+			"securityContext": map[string]any{"fsGroup": int64(0)},
+			"containers":      []any{map[string]any{"name": "app", "image": "library/app:1"}},
+		},
+	}}
+	Object(root, Options{})
+	if _, found, _ := unstructured.NestedFieldNoCopy(root.Object, "spec", "securityContext"); found {
+		t.Fatal("fsGroup 0 must be dropped and an empty securityContext removed")
+	}
+}
+
 func TestObjectStripsUnmappedRuntimeClass(t *testing.T) {
 	t.Parallel()
 	obj := &unstructured.Unstructured{Object: map[string]any{

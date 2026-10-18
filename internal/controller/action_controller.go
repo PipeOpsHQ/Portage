@@ -23,16 +23,20 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/apply"
@@ -175,12 +179,16 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, act, "policy: "+err.Error())
 	}
 	if act.Status.Phase == "" {
+		// Log before the status write. A failed update returns the error
+		// with no other line, and the failure backoff used to climb to
+		// about 16 minutes while phase stayed "".
+		logger.Info("reconcile action", "type", act.Spec.Type, "phase", portagev1alpha1.ActionPhasePending)
 		act.Status.Phase = portagev1alpha1.ActionPhasePending
 		act.Status.Message = "pending"
 		if err := r.Status().Update(ctx, act); err != nil {
+			logger.Error(err, "mark action pending", "type", act.Spec.Type)
 			return ctrl.Result{}, err
 		}
-		logger.Info("reconcile action", "type", act.Spec.Type, "phase", act.Status.Phase)
 	}
 
 	pair, err := r.loadPair(ctx, pol)
@@ -1042,12 +1050,43 @@ func (r *ActionReconciler) fail(ctx context.Context, act *portagev1alpha1.Action
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager registers the reconciler.
+// SetupWithManager registers the reconciler twice. Replicate reconciles are
+// long (two clusters, object sync). Backup and Restore use a separate queue
+// so a live replica cannot hold every worker. Failure backoff caps at 30s;
+// the default cap is about 16 minutes, which left phase "" with no log line.
 func (r *ActionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Replicate reconciles are long (two clusters, object sync). One worker
-	// left new Backup and Restore Actions at phase "" for many minutes.
-	return ctrl.NewControllerManagedBy(mgr).
+	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("action-replicate").
 		For(&portagev1alpha1.Action{}).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
+		WithEventFilter(predicate.NewPredicateFuncs(replicateAction)).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: 2,
+			RateLimiter:             actionRateLimiter(),
+		}).
+		Complete(r); err != nil {
+		return err
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("action").
+		For(&portagev1alpha1.Action{}).
+		WithEventFilter(predicate.NewPredicateFuncs(func(o client.Object) bool {
+			return !replicateAction(o)
+		})).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: 4,
+			RateLimiter:             actionRateLimiter(),
+		}).
 		Complete(r)
+}
+
+func replicateAction(o client.Object) bool {
+	act, ok := o.(*portagev1alpha1.Action)
+	return ok && act.Spec.Type == portagev1alpha1.ActionReplicate
+}
+
+func actionRateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
+	return workqueue.NewTypedMaxOfRateLimiter(
+		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 30*time.Second),
+		&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+	)
 }

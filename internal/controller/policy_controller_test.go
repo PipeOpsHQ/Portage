@@ -141,12 +141,8 @@ func TestReplicateDisabledDeletesLiveAction(t *testing.T) {
 		Spec:       portagev1alpha1.PolicySpec{Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}}},
 	}
 	live := &portagev1alpha1.Action{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "replicate-p",
-			Namespace: "ns",
-			Labels:    map[string]string{"portage.io/live-replica": "true"},
-		},
-		Spec: portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionReplicate, PolicyRef: "p"},
+		ObjectMeta: metav1.ObjectMeta{Name: "replicate-p", Namespace: "ns"},
+		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionReplicate, PolicyRef: "p"},
 	}
 	hand := &portagev1alpha1.Action{
 		ObjectMeta: metav1.ObjectMeta{Name: "replicate-manual", Namespace: "ns"},

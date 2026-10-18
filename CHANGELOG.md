@@ -14,6 +14,19 @@
 
 ### Fixed
 
+- Restore strips `fsGroup: 0` and any Postgres `fsGroup` before the dest
+  object is created. Heal ran after the first pod mount, so a PVC that
+  cold Replicate had already filled came up with `server.key` group-writable
+  while status still listed `strip-root-fsgroup`.
+- Each workload gets its own restic repository
+  (`<object-store URL>/<namespace>/<name>`) and secret
+  `portage-restic-<workload>`. One random password per namespace against
+  one ClusterPair URL made every later tenant fail with
+  `wrong password or no key found`.
+- Backup and Restore Actions reconcile on their own queue, apart from
+  Replicate. A new Action is logged as Pending before the status write.
+  Failure backoff caps at 30s. `replicate.enabled: false` deletes
+  `replicate-<policy>` even without the `portage.io/live-replica` label.
 - Dest restic waits until the ReplicationSource has `lastSyncTime`.
   Creating both movers together made source and dest `restic init` the
   same empty repository and damaged the key (`ciphertext verification failed`).

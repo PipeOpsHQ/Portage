@@ -32,7 +32,7 @@ func TestEnsureSecretsCreatesRcloneAndPSK(t *testing.T) {
 	t.Parallel()
 	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
 	c := objectstore.Creds{AccessKey: "ak", SecretKey: "sk", Endpoint: "http://minio:9000", Region: "us-east-1"}
-	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files"); err != nil {
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files/ns/pg", "pg"); err != nil {
 		t.Fatal(err)
 	}
 	rclone, err := kube.CoreV1().Secrets("ns").Get(context.Background(), rcloneSecretName, metav1.GetOptions{})
@@ -49,7 +49,7 @@ func TestEnsureSecretsCreatesRcloneAndPSK(t *testing.T) {
 	}
 	// second call must not rotate psk
 	psk := string(tls.Data["psk"])
-	restic, err := kube.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
+	restic, err := kube.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("pg"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,14 +58,14 @@ func TestEnsureSecretsCreatesRcloneAndPSK(t *testing.T) {
 		t.Fatalf("restic repo=%s", repo)
 	}
 	pw := string(restic.Data["RESTIC_PASSWORD"])
-	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files"); err != nil {
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/files/ns/pg", "pg"); err != nil {
 		t.Fatal(err)
 	}
 	tls2, _ := kube.CoreV1().Secrets("ns").Get(context.Background(), tlsSecretName, metav1.GetOptions{})
 	if string(tls2.Data["psk"]) != psk {
 		t.Fatal("psk rotated")
 	}
-	restic2, _ := kube.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
+	restic2, _ := kube.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("pg"), metav1.GetOptions{})
 	if string(restic2.Data["RESTIC_PASSWORD"]) != pw {
 		t.Fatal("restic password rotated")
 	}
@@ -76,14 +76,14 @@ func TestCopySecretsKeepsResticPassword(t *testing.T) {
 	src := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
 	dst := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
 	c := objectstore.Creds{AccessKey: "ak", SecretKey: "sk", Endpoint: "http://minio:9000"}
-	if err := EnsureSecrets(context.Background(), src, "ns", c, "s3://portage/files"); err != nil {
+	if err := EnsureSecrets(context.Background(), src, "ns", c, "s3://portage/files/ns/pg", "pg"); err != nil {
 		t.Fatal(err)
 	}
-	if err := CopySecrets(context.Background(), src, dst, "ns"); err != nil {
+	if err := CopySecrets(context.Background(), src, dst, "ns", "pg"); err != nil {
 		t.Fatal(err)
 	}
-	srcRestic, _ := src.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
-	dstRestic, err := dst.CoreV1().Secrets("ns").Get(context.Background(), resticSecretName, metav1.GetOptions{})
+	srcRestic, _ := src.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("pg"), metav1.GetOptions{})
+	dstRestic, err := dst.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("pg"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +97,34 @@ func TestCopySecretsKeepsResticPassword(t *testing.T) {
 	dstTLS, _ := dst.CoreV1().Secrets("ns").Get(context.Background(), tlsSecretName, metav1.GetOptions{})
 	if string(dstTLS.Data["psk"]) != string(srcTLS.Data["psk"]) {
 		t.Fatal("dest rsyncTLS psk must match source")
+	}
+}
+
+func TestEnsureSecretsIsolatesWorkloads(t *testing.T) {
+	t.Parallel()
+	kube := k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}})
+	c := objectstore.Creds{AccessKey: "ak", SecretKey: "sk", Endpoint: "http://minio:9000"}
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/e2e/purple-smoke/pg", "pg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSecrets(context.Background(), kube, "ns", c, "s3://portage/e2e/purple-smoke/redis", "redis"); err != nil {
+		t.Fatal(err)
+	}
+	pg, err := kube.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("pg"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	redis, err := kube.CoreV1().Secrets("ns").Get(context.Background(), ResticSecretName("redis"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pg.Data["RESTIC_PASSWORD"]) == string(redis.Data["RESTIC_PASSWORD"]) {
+		t.Fatal("workloads must not share a restic password")
+	}
+	if string(pg.Data["RESTIC_REPOSITORY"]) == string(redis.Data["RESTIC_REPOSITORY"]) {
+		t.Fatal("workloads must not share a restic repository")
+	}
+	if !strings.Contains(string(pg.Data["RESTIC_REPOSITORY"]), "purple-smoke/pg") {
+		t.Fatalf("pg repo=%s", pg.Data["RESTIC_REPOSITORY"])
 	}
 }

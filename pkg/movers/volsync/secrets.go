@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -31,16 +32,48 @@ import (
 )
 
 const (
-	rcloneSecretName = "portage-rclone"
-	tlsSecretName    = "portage-rsync-tls"
-	resticSecretName = "portage-restic"
+	rcloneSecretName   = "portage-rclone"
+	tlsSecretName      = "portage-rsync-tls"
+	resticSecretPrefix = "portage-restic-"
 )
 
 // SecretNames used in ReplicationSource/Destination specs.
 func SecretNames() (rclone, tls string) { return rcloneSecretName, tlsSecretName }
 
-// ResticSecretName is the VolSync restic repository secret.
-func ResticSecretName() string { return resticSecretName }
+// ResticSecretName is the per-workload VolSync restic repository secret.
+// One ClusterPair bucket is shared. Each workload gets its own key so a
+// second namespace does not open the first tenant's repository.
+func ResticSecretName(workload string) string {
+	return resticSecretPrefix + dns1123(workload)
+}
+
+func dns1123(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+			continue
+		}
+		if !prevDash && b.Len() > 0 {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		out = "workload"
+	}
+	max := 253 - len(resticSecretPrefix)
+	if len(out) > max {
+		out = strings.Trim(out[:max], "-")
+		if out == "" {
+			out = "workload"
+		}
+	}
+	return out
+}
 
 // RcloneINI is the VolSync rclone.conf section (must match rcloneConfigSection).
 func RcloneINI(c objectstore.Creds) string {
@@ -67,8 +100,9 @@ func orRegion(r string) string {
 	return r
 }
 
-// EnsureSecrets writes rclone.conf, restic repo, and rsyncTLS PSK secrets if they do not exist.
-func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath string) error {
+// EnsureSecrets writes rclone.conf, the per-workload restic repo secret, and
+// the rsyncTLS PSK if they do not exist.
+func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath, workload string) error {
 	if kube == nil || namespace == "" {
 		return nil
 	}
@@ -81,7 +115,7 @@ func EnsureSecrets(ctx context.Context, kube kubernetes.Interface, namespace str
 		if err := upsertSecret(ctx, kube, sec); err != nil {
 			return err
 		}
-		if err := ensureResticSecret(ctx, kube, namespace, c, destPath); err != nil {
+		if err := ensureResticSecret(ctx, kube, namespace, c, destPath, workload); err != nil {
 			return err
 		}
 	}
@@ -110,11 +144,12 @@ func upsertSecret(ctx context.Context, kube kubernetes.Interface, sec *corev1.Se
 	return err
 }
 
-func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath string) error {
+func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespace string, c objectstore.Creds, destPath, workload string) error {
 	pw := make([]byte, 16)
 	if _, err := rand.Read(pw); err != nil {
 		return err
 	}
+	name := ResticSecretName(workload)
 	data := map[string][]byte{
 		"RESTIC_REPOSITORY":     []byte(c.ResticRepository(destPath)),
 		"RESTIC_PASSWORD":       []byte(hex.EncodeToString(pw)),
@@ -122,7 +157,7 @@ func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespac
 		"AWS_SECRET_ACCESS_KEY": []byte(c.SecretKey),
 		"AWS_DEFAULT_REGION":    []byte(orRegion(c.Region)),
 	}
-	cur, err := kube.CoreV1().Secrets(namespace).Get(ctx, resticSecretName, metav1.GetOptions{})
+	cur, err := kube.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		// Keep RESTIC_PASSWORD stable so incremental repos stay readable.
 		if old := cur.Data["RESTIC_PASSWORD"]; len(old) > 0 {
@@ -136,7 +171,7 @@ func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespac
 		return err
 	}
 	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: resticSecretName, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "portage"}},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       data,
 	}
@@ -144,14 +179,14 @@ func ensureResticSecret(ctx context.Context, kube kubernetes.Interface, namespac
 	return ignoreExists(err)
 }
 
-// CopySecrets clones rclone/restic/rsyncTLS secrets from source to dest.
-// Restic passwords and rsyncTLS PSKs must match across clusters or dest
-// cannot read the source repo / TLS peer.
-func CopySecrets(ctx context.Context, src, dst kubernetes.Interface, namespace string) error {
+// CopySecrets clones rclone, the per-workload restic secret, and the
+// rsyncTLS PSK from source to dest. Restic passwords and PSKs must match
+// across clusters or dest cannot read the source repo / TLS peer.
+func CopySecrets(ctx context.Context, src, dst kubernetes.Interface, namespace, workload string) error {
 	if src == nil || dst == nil || src == dst || namespace == "" {
 		return nil
 	}
-	for _, name := range []string{rcloneSecretName, resticSecretName, tlsSecretName} {
+	for _, name := range []string{rcloneSecretName, ResticSecretName(workload), tlsSecretName} {
 		sec, err := src.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 		if errors.IsNotFound(err) {
 			continue

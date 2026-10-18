@@ -6,7 +6,10 @@
   dest ConfigMap `portage-standby-<name>`, `pg_basebackup -R` Job, STS mount at
   `/etc/portage-standby`. Dest must reach source:5432.
 - **Generic PVC:** VolSync `ReplicationSource` / `ReplicationDestination`.
-  ObjectStore → **restic** (chunked incremental; `portage-restic` secret).
+  ObjectStore → **restic** (chunked incremental). Each workload gets its own
+  repository `<ClusterPair URL>/<namespace>/<name>` and secret
+  `portage-restic-<workload>`. One password per namespace against one
+  shared URL made the next tenant fail with `wrong password or no key found`.
   Dest **schedule-pulls** (a one-shot manual trigger was the live-sync hole).
   The ReplicationDestination is applied only after the ReplicationSource
   has `status.lastSyncTime`. Creating both at once makes each mover
@@ -36,13 +39,19 @@
   hostname (AffinityFromVolume copies those onto the next mover), and
   deletes dest mover Jobs pinned to a hostname that is not a dest node.
   Probe reports the pin if GitOps re-injects it.
-  Dest restic does not set `fsGroup`. Dest workloads drop `fsGroup: 0`,
-  and Postgres drops any `fsGroup`, so the app pod's mount does not chmod
-  restored PGDATA `g+rw` (Postgres requires `server.key` mode 0600).
+  Dest restic does not set `fsGroup`. Sanitize drops `fsGroup: 0` on every
+  engine, and any `fsGroup` on Postgres, before the dest object is created.
+  Heal still clears the template afterwards. That order matters: kubelet
+  ORs `0660` onto files already on the volume at the first mount, and
+  clearing the template later does not chmod `server.key` back to `0600`.
+  Cold Replicate fills the dest PVC before Restore, so the first pod is
+  mounting files restic already wrote.
   While a Running user pod mounts the dest PVC, the ReplicationDestination
   is paused and its mover Job is deleted. Direct copyMethod would otherwise
   schedule the mover onto that same node and overwrite live PGDATA
-  (`postmaster.pid` then contains the source PID).
+  (`postmaster.pid` then contains the source PID). Replication does not
+  copy new bytes once that pod is Running. Cutover is cold Replicate into
+  an empty dest PVC, then Restore.
   A source PVC that is gone drops its ReplicationSource and
   ReplicationDestination. Leftover pairs whose workload left the inventory
   are pruned on the next Replicate reconcile.
@@ -56,8 +65,11 @@ does not reject a RuntimeClass that exists only on source.
 Replicate is a **live loop**, not a one-shot. The Action stays `CatchingUp` and
 re-attests dest (Ready + probe, dest Get for objects). `Policy.spec.replicate.enabled`
 keeps one `replicate-<policy>` Action running. Setting `enabled: false` deletes
-that Action so it stops reconciling. A Replicate Action you created yourself,
-without the `portage.io/live-replica` label, is left in place. A ClusterPair with dest
+that reserved Action even when it has no `portage.io/live-replica` label, so
+the loop stops. A Replicate Action you created yourself under a different name
+is left in place. Backup and Restore reconcile on their own queue, and a new
+Action is logged as Pending before its status write. Failure backoff caps at
+30s. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
 `fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest restic

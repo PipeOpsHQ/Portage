@@ -79,7 +79,7 @@ func TestReplicateObjectStoreUsesResticIncremental(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, _, _ := unstructured.NestedString(src.Object, "spec", "restic", "repository")
-	if repo != resticSecretName {
+	if repo != ResticSecretName(w.Name) {
 		t.Fatalf("restic repository=%q", repo)
 	}
 	cm, _, _ := unstructured.NestedString(src.Object, "spec", "restic", "copyMethod")
@@ -154,8 +154,22 @@ func TestReplicateObjectStoreRcloneOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	path, _, _ := unstructured.NestedString(obj.Object, "spec", "rclone", "rcloneDestPath")
-	if path != "s3://bucket/ns/pg" {
+	if path != "s3://bucket/ns/pg/ns/pg" {
 		t.Fatalf("rclone path=%q", path)
+	}
+}
+
+func TestObjectPathIsPerWorkload(t *testing.T) {
+	t.Parallel()
+	m := Mover{DestPath: "s3://portage/e2e/"}
+	a := m.objectPath(classify.Workload{Namespace: "purple-smoke", Name: "pg"})
+	b := m.objectPath(classify.Workload{Namespace: "divine-firefly", Name: "pg"})
+	if a != "s3://portage/e2e/purple-smoke/pg" || b != "s3://portage/e2e/divine-firefly/pg" {
+		t.Fatalf("a=%s b=%s", a, b)
+	}
+	bare := Mover{}.objectPath(classify.Workload{Namespace: "ns", Name: "data"})
+	if bare != "s3://portage/ns/data" {
+		t.Fatalf("bare=%s", bare)
 	}
 }
 

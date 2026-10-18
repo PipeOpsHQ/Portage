@@ -21,6 +21,7 @@ package volsync
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -113,7 +114,7 @@ func (m Mover) Backup(ctx context.Context, w classify.Workload, _ movers.Cluster
 	if pvc == "" {
 		return movers.Artifact{Mover: m.Name(), Message: "no pvc"}, nil
 	}
-	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, m.objectPath(w)); err != nil {
+	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, m.objectPath(w), w.Name); err != nil {
 		return movers.Artifact{Mover: m.Name()}, fmt.Errorf("volsync source secrets: %w", err)
 	}
 	if needsPrivilegedMover(w) {
@@ -155,7 +156,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		return nil
 	}
 	path := m.objectPath(w)
-	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, path); err != nil {
+	if err := EnsureSecrets(ctx, m.Kube, w.Namespace, m.Creds, path, w.Name); err != nil {
 		return fmt.Errorf("volsync source secrets: %w", err)
 	}
 	if needsPrivilegedMover(w) {
@@ -172,7 +173,7 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 				return fmt.Errorf("volsync dest privileged movers: %w", err)
 			}
 		}
-		if err := CopySecrets(ctx, m.Kube, dk, w.Namespace); err != nil {
+		if err := CopySecrets(ctx, m.Kube, dk, w.Namespace, w.Name); err != nil {
 			return fmt.Errorf("volsync dest secrets: %w", err)
 		}
 		for _, claim := range w.PVCNames {
@@ -457,7 +458,7 @@ func (m Mover) destination(w classify.Workload, name string) *unstructured.Unstr
 
 func (m Mover) resticSpec(w classify.Workload) map[string]any {
 	spec := map[string]any{
-		"repository":        resticSecretName,
+		"repository":        ResticSecretName(w.Name),
 		"copyMethod":        m.copyMethod(),
 		"cacheCapacity":     "1Gi",
 		"pruneIntervalDays": int64(7),
@@ -478,7 +479,7 @@ func (m Mover) resticSpec(w classify.Workload) map[string]any {
 // name; Replicate creates that PVC on dest before this CR is applied.
 func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	spec := map[string]any{
-		"repository":    resticSecretName,
+		"repository":    ResticSecretName(w.Name),
 		"copyMethod":    m.copyMethod(),
 		"cacheCapacity": "1Gi",
 	}
@@ -600,11 +601,24 @@ func (m Mover) rcloneSpec(w classify.Workload) map[string]any {
 	}
 }
 
+// objectPath is the restic/rclone prefix for one workload. DestPath is the
+// ClusterPair object-store URL, shared by every tenant. Appending namespace
+// and name gives each workload its own repository so a second tenant's
+// random RESTIC_PASSWORD does not try to open the first tenant's key.
 func (m Mover) objectPath(w classify.Workload) string {
-	if m.DestPath != "" {
-		return m.DestPath
+	base := strings.TrimRight(m.DestPath, "/")
+	if base == "" {
+		base = "s3://portage"
 	}
-	return "s3://portage/" + w.Namespace + "/" + w.Name
+	ns := w.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	name := w.Name
+	if name == "" {
+		name = "workload"
+	}
+	return base + "/" + ns + "/" + name
 }
 
 func (m Mover) copyMethod() string {

@@ -221,8 +221,9 @@ func (r *PolicyReconciler) maybeBackup(ctx context.Context, pol *portagev1alpha1
 
 // maybeReplicate ensures one long-lived Replicate Action while
 // spec.replicate.enabled. The Action stays CatchingUp and live-syncs dest.
-// Turning the flag off deletes that Action. Leaving it running is why a
-// "paused" replica kept reconciling and held the Action worker.
+// Turning the flag off deletes that reserved Action even when the
+// live-replica label was never written. A hand-written Replicate Action
+// uses a different name and is left alone.
 func (r *PolicyReconciler) maybeReplicate(ctx context.Context, pol *portagev1alpha1.Policy) error {
 	name := replicateName(pol.Name)
 	if !pol.Spec.Replicate.Enabled {
@@ -234,8 +235,7 @@ func (r *PolicyReconciler) maybeReplicate(ctx context.Context, pol *portagev1alp
 		if err != nil {
 			return err
 		}
-		// A hand-written Replicate Action with the same name is left alone.
-		if existing.Labels["portage.io/live-replica"] != "true" {
+		if existing.Spec.Type != portagev1alpha1.ActionReplicate {
 			return nil
 		}
 		return r.Delete(ctx, existing)

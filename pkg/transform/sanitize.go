@@ -25,6 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/PipeOpsHQ/portage/pkg/classify"
 )
 
 // Annotation keys that pin a workload to the source cloud or node.
@@ -93,6 +95,7 @@ func Object(obj *unstructured.Unstructured, opt Options) {
 	remapStorageClass(obj, opt)
 	remapRuntimeClass(obj, opt)
 	stripAffinity(obj)
+	stripPodFSGroup(obj.Object)
 }
 
 // PVC applies Object plus claim-specific cleanup.
@@ -215,6 +218,101 @@ func walkRuntimeClass(m map[string]any, opt Options) {
 				}
 			}
 		}
+	}
+}
+
+// stripPodFSGroup drops fsGroup values that make kubelet OR 0660 onto files
+// already on the volume. Restore applies this before the first dest pod is
+// created. Heal runs after that mount, which is too late: a PVC that cold
+// Replicate already filled has server.key widened, and clearing the template
+// afterwards does not chmod it back. fsGroup 0 does this on every engine.
+// Any fsGroup on Postgres does it to server.key, which must stay 0600.
+func stripPodFSGroup(m map[string]any) {
+	if m == nil {
+		return
+	}
+	if podSpecSecurityContext(m) {
+		stripFSGroupOnPodSpec(m)
+	}
+	for _, v := range m {
+		switch t := v.(type) {
+		case map[string]any:
+			stripPodFSGroup(t)
+		case []any:
+			for _, item := range t {
+				if nested, ok := item.(map[string]any); ok {
+					stripPodFSGroup(nested)
+				}
+			}
+		}
+	}
+}
+
+func podSpecSecurityContext(m map[string]any) bool {
+	_, sc := m["securityContext"].(map[string]any)
+	if !sc {
+		return false
+	}
+	_, containers := m["containers"]
+	_, init := m["initContainers"]
+	return containers || init
+}
+
+func stripFSGroupOnPodSpec(spec map[string]any) {
+	sc, ok := spec["securityContext"].(map[string]any)
+	if !ok {
+		return
+	}
+	fg, ok := intFromUnstructured(sc["fsGroup"])
+	if !ok {
+		return
+	}
+	if fg != 0 && !postgresContainers(spec) {
+		return
+	}
+	delete(sc, "fsGroup")
+	if len(sc) == 0 {
+		delete(spec, "securityContext")
+	}
+}
+
+func postgresContainers(spec map[string]any) bool {
+	return containersMatchPostgres(spec["containers"]) || containersMatchPostgres(spec["initContainers"])
+}
+
+func containersMatchPostgres(v any) bool {
+	list, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range list {
+		c, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		img, _ := c["image"].(string)
+		eng, matched := classify.MatchImage(img)
+		if matched && eng.Name == "postgres" {
+			return true
+		}
+	}
+	return false
+}
+
+func intFromUnstructured(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }
 
