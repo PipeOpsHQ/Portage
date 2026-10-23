@@ -25,10 +25,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/PipeOpsHQ/portage/pkg/clusterobjects"
 	"github.com/PipeOpsHQ/portage/pkg/transform"
 )
 
-func ensureNamespace(ctx context.Context, kube kubernetes.Interface, ns string) error {
+// ensureNamespace creates the destination namespace when it is missing.
+// labels carries the source Capsule tenant label when the source namespace
+// has one. Creating the namespace bare and patching the label on later is
+// rejected by Capsule 0.14, and that namespace can never be adopted.
+// An existing namespace is left as-is so PVC replication into a namespace
+// Portage already created can continue; cluster-object sync reports that
+// Capsule will not adopt it.
+func ensureNamespace(ctx context.Context, kube kubernetes.Interface, ns string, labels map[string]string) error {
 	if kube == nil || ns == "" {
 		return nil
 	}
@@ -39,8 +47,37 @@ func ensureNamespace(ctx context.Context, kube kubernetes.Interface, ns string) 
 	if !errors.IsNotFound(err) {
 		return err
 	}
-	_, err = kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{})
-	return ignoreExists(err)
+	obj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: labels}}
+	_, err = kube.CoreV1().Namespaces().Create(ctx, obj, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
+	if err != nil {
+		tenant := ""
+		if labels != nil {
+			tenant = labels[clusterobjects.TenantLabel]
+		}
+		return clusterobjects.AnnotateNamespaceError(err, ns, tenant)
+	}
+	return nil
+}
+
+func sourceCapsuleLabels(ctx context.Context, kube kubernetes.Interface, ns string) (map[string]string, error) {
+	if kube == nil || ns == "" {
+		return nil, nil
+	}
+	src, err := kube.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("source namespace %s: %w", ns, err)
+	}
+	if src.Labels == nil {
+		return nil, nil
+	}
+	v := src.Labels[clusterobjects.TenantLabel]
+	if v == "" {
+		return nil, nil
+	}
+	return map[string]string{clusterobjects.TenantLabel: v}, nil
 }
 
 // ensureDestPVC copies the source claim onto dest (same name, remapped

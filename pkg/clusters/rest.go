@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/rest"
 )
 
@@ -65,14 +66,48 @@ type bearerTransport struct {
 	src  tokenSource
 }
 
+// client-go's User-Agent wrapper implements CancelRequest, so net/http treats
+// the stack as a legacy RoundTripper: on Client.Timeout it closes Request.Cancel
+// and calls CancelRequest instead of relying on context alone. http.Request.Clone
+// drops that channel, and a wrapper that does not unwrap leaves the warning
+// "unable to cancel request" with the in-flight call still running. The
+// reconcile worker then never returns, so the Action is not retried until the
+// process restarts.
+var _ utilnet.RoundTripperWrapper = &bearerTransport{}
+
 func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
 	tok, err := t.src.Token(req.Context())
 	if err != nil {
 		return nil, err
 	}
-	r := req.Clone(req.Context())
+	// CloneRequest keeps Request.Cancel. http.Request.Clone does not.
+	r := utilnet.CloneRequest(req)
 	r.Header.Set("Authorization", "Bearer "+tok)
 	return t.base.RoundTrip(r)
+}
+
+func (t *bearerTransport) CancelRequest(req *http.Request) {
+	cancelRequest(t.base, req)
+}
+
+func (t *bearerTransport) WrappedRoundTripper() http.RoundTripper { return t.base }
+
+func cancelRequest(rt http.RoundTripper, req *http.Request) {
+	type canceler interface {
+		CancelRequest(*http.Request)
+	}
+	switch rt := rt.(type) {
+	case canceler:
+		rt.CancelRequest(req)
+	case utilnet.RoundTripperWrapper:
+		cancelRequest(rt.WrappedRoundTripper(), req)
+	default:
+		// Nothing left that understands CancelRequest. Request.Cancel on the
+		// cloned request is what still unblocks *http.Transport.
+	}
 }
 
 // cachedToken refreshes a bit before expiry so movers do not see 401s.
@@ -86,18 +121,28 @@ type cachedToken struct {
 
 func (c *cachedToken) Token(ctx context.Context) (string, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	skew := c.skew
 	if skew == 0 {
 		skew = time.Minute
 	}
 	if c.tok != "" && time.Now().Add(skew).Before(c.exp) {
-		return c.tok, nil
+		tok := c.tok
+		c.mu.Unlock()
+		return tok, nil
 	}
-	tok, exp, err := c.fetch(ctx)
+	fetch := c.fetch
+	c.mu.Unlock()
+	// fetch runs outside the lock. A refresh that ignores cancellation used
+	// to pin every later caller, including the reconcile, until process restart.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	tok, exp, err := fetch(ctx)
 	if err != nil {
 		return "", err
 	}
+	c.mu.Lock()
 	c.tok, c.exp = tok, exp
+	c.mu.Unlock()
 	return tok, nil
 }

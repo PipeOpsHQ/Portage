@@ -19,6 +19,7 @@ package clusterobjects
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -651,5 +652,216 @@ func TestSyncDeletesTerminatingAndKeepsGoing(t *testing.T) {
 	}
 	if _, err := dst.Resource(gvr).Namespace("ns").Get(context.Background(), "live", metav1.GetOptions{}); err != nil {
 		t.Fatalf("later objects must still apply: %v", err)
+	}
+}
+
+func TestForbiddenTenantListSurfaces(t *testing.T) {
+	t.Parallel()
+	gvr := schema.GroupVersionResource{Group: "capsule.clastix.io", Version: "v1beta2", Resource: "tenants"}
+	src := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		gvr: "TenantList",
+	})
+	src.PrependReactor("list", "tenants", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "capsule.clastix.io", Resource: "tenants"}, "", fmt.Errorf("no"))
+	})
+	_, err := List(context.Background(), src, []Ref{{GroupVersionResource: gvr, Namespaced: false}}, nil, portagev1alpha1.ClusterObjectsSpec{})
+	if err == nil || !strings.Contains(err.Error(), "tenants") {
+		t.Fatalf("forbidden Capsule Tenant list must surface, got %v", err)
+	}
+}
+
+func TestSyncCapsuleTenantBeforeNamespace(t *testing.T) {
+	t.Parallel()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	var order []string
+	dst.PrependReactor("create", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		order = append(order, action.GetResource().Resource)
+		return false, nil, nil
+	})
+	items := []Item{capsuleNamespace("app", "acme"), capsuleTenant("acme")}
+	if err := Sync(context.Background(), dst, items); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "tenants" || order[1] != "namespaces" {
+		t.Fatalf("apply order %v", order)
+	}
+	got, err := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetLabels()[TenantLabel] != "acme" {
+		t.Fatalf("labels %#v", got.GetLabels())
+	}
+}
+
+func TestSyncDoesNotAdoptUnownedCapsuleNamespace(t *testing.T) {
+	t.Parallel()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	bare := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Namespace",
+		"metadata": map[string]any{"name": "app"},
+	}}
+	if _, err := dst.Resource(nsGVR()).Create(context.Background(), bare, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.Resource(tenantGVR()).Create(context.Background(), capsuleTenant("acme").Obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	err := Sync(context.Background(), dst, []Item{capsuleNamespace("app", "acme")})
+	if err == nil || !strings.Contains(err.Error(), "ownerReference") || !strings.Contains(err.Error(), "delete namespace") {
+		t.Fatalf("got %v", err)
+	}
+	got, getErr := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{})
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.GetLabels()[TenantLabel] != "" {
+		t.Fatalf("label was patched onto an unowned namespace: %#v", got.GetLabels())
+	}
+}
+
+func TestSyncKeepsDestCapsuleOwnerReference(t *testing.T) {
+	t.Parallel()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	owned := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Namespace",
+		"metadata": map[string]any{
+			"name":   "app",
+			"labels": map[string]any{TenantLabel: "acme"},
+			"ownerReferences": []any{map[string]any{
+				"apiVersion": "capsule.clastix.io/v1beta2",
+				"kind":       "Tenant",
+				"name":       "acme",
+				"uid":        "dest-uid",
+			}},
+		},
+	}}
+	if _, err := dst.Resource(nsGVR()).Create(context.Background(), owned, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.Resource(tenantGVR()).Create(context.Background(), capsuleTenant("acme").Obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Sanitize has already dropped the source ownerReference.
+	if err := Sync(context.Background(), dst, []Item{capsuleNamespace("app", "acme")}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !HasCapsuleOwner(got) {
+		t.Fatalf("dest Tenant ownerReference was stripped: %#v", got.GetOwnerReferences())
+	}
+}
+
+func TestSyncRefusesNamespaceWithoutDestTenant(t *testing.T) {
+	t.Parallel()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	err := Sync(context.Background(), dst, []Item{capsuleNamespace("app", "acme")})
+	if err == nil || !strings.Contains(err.Error(), "Tenant \"acme\"") {
+		t.Fatalf("got %v", err)
+	}
+	if _, getErr := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{}); !apierrors.IsNotFound(getErr) {
+		t.Fatalf("namespace must not be created, get err %v", getErr)
+	}
+}
+
+func TestSyncSurfacesCapsuleAdmissionDenial(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "forbidden deny",
+			err: apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, "app",
+				fmt.Errorf("admission webhook %q denied the request: only tenant owners can create tenant-owned namespaces", "namespaces.validating.projectcapsule.dev")),
+			want: "spec.owners",
+		},
+		{
+			name: "bad request non-owned",
+			err:  apierrors.NewBadRequest(`admission webhook "namespaces.projectcapsule.dev" denied the request: can not assign the desired namespace to a non-owned Tenant`),
+			want: "spec.owners",
+		},
+		{
+			name: "validating webhook missing ownerReference",
+			err:  apierrors.NewInternalError(fmt.Errorf("admission webhook %q denied the request: namespace has tenant label %q but no Tenant ownerReference", "namespaces.validating.projectcapsule.dev", "acme")),
+			want: "spec.owners",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+			if _, err := dst.Resource(tenantGVR()).Create(context.Background(), capsuleTenant("acme").Obj, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			dst.PrependReactor("create", "namespaces", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				return true, nil, tc.err
+			})
+			err := Sync(context.Background(), dst, []Item{capsuleNamespace("app", "acme")})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v", err)
+			}
+			if _, getErr := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{}); !apierrors.IsNotFound(getErr) {
+				t.Fatalf("denied create must not leave a namespace, get %v", getErr)
+			}
+		})
+	}
+}
+
+func TestSyncFindsTenantOnOlderVersionWhenPreferredIsForbidden(t *testing.T) {
+	t.Parallel()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	older := schema.GroupVersionResource{Group: "capsule.clastix.io", Version: "v1beta1", Resource: "tenants"}
+	obj := capsuleTenant("acme").Obj.DeepCopy()
+	obj.SetAPIVersion("capsule.clastix.io/v1beta1")
+	if _, err := dst.Resource(older).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dst.PrependReactor("get", "tenants", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetResource().Version == "v1beta2" {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "capsule.clastix.io", Resource: "tenants"}, "acme", fmt.Errorf("no"))
+		}
+		return false, nil, nil
+	})
+	if err := Sync(context.Background(), dst, []Item{capsuleNamespace("app", "acme")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nsGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+}
+
+func tenantGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "capsule.clastix.io", Version: "v1beta2", Resource: "tenants"}
+}
+
+func capsuleTenant(name string) Item {
+	return Item{
+		GVR: tenantGVR(),
+		Obj: &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "capsule.clastix.io/v1beta2", "kind": "Tenant",
+			"metadata": map[string]any{"name": name},
+		}},
+	}
+}
+
+func capsuleNamespace(name, tenant string) Item {
+	return Item{
+		GVR: nsGVR(),
+		Obj: &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "Namespace",
+			"metadata": map[string]any{
+				"name":   name,
+				"labels": map[string]any{TenantLabel: tenant},
+			},
+		}},
 	}
 }

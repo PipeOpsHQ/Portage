@@ -14,6 +14,23 @@
 
 ### Fixed
 
+- Cross-cluster clients cancel a timed-out request. The bearer transport
+  cloned the request with `http.Request.Clone`, which drops `Request.Cancel`,
+  and did not unwrap `CancelRequest`. After `rest.Config` timeout (~30s)
+  client-go logged `unable to cancel request` and the reconcile goroutine
+  never returned, so that Action stayed silent until the controller pod
+  restarted. Token refresh no longer holds its lock across the cloud call.
+- Capsule namespaces are created with `capsule.clastix.io/tenant` already
+  set, and only after the destination Tenant exists. Tenants are applied
+  before Namespaces. A destination namespace that already exists without a
+  Tenant ownerReference is not patched (Capsule will not adopt it); the
+  Action error says to register the Portage destination ServiceAccount on
+  `Tenant.spec.owners` and delete that namespace before retrying. A
+  Forbidden or BadRequest admission denial on the namespace itself is
+  returned with that owner step. It is not treated as a skipped list.
+  Updates keep the destination Tenant ownerReference instead of stripping
+  it. A forbidden `capsule.clastix.io/tenants` list is returned instead of
+  skipped.
 - Restore strips `fsGroup: 0` and any Postgres `fsGroup` before the dest
   object is created. Heal ran after the first pod mount, so a PVC that
   cold Replicate had already filled came up with `server.key` group-writable

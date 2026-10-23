@@ -560,6 +560,29 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 	}
 	var failed string
 	workloadsStatus := []portagev1alpha1.WorkloadActionStatus{}
+	// Object graph before movers. A Capsule Tenant has to exist on dest
+	// before the namespace create, and VolSync would otherwise create that
+	// namespace first (bare, which Capsule will not adopt later).
+	var clusterSt *portagev1alpha1.WorkloadActionStatus
+	var clusterFailed string
+	for _, w := range inv.Workloads {
+		if !clusterobjects.Is(w) {
+			continue
+		}
+		st := portagev1alpha1.WorkloadActionStatus{Name: w.Name, Key: w.Key(), Class: w.Class, Engine: w.Engine}
+		ok, msg, err := r.syncClusterObjectsLive(ctx, pol, pair, ep)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "sync cluster objects")
+			clusterFailed = err.Error()
+			st.Message = clusterFailed
+		} else {
+			st.Ready, st.ProbeOK, st.Probe, st.Message = ok, ok, msg, msg
+			if !ok {
+				clusterFailed = "waiting for replica sync: " + msg
+			}
+		}
+		clusterSt = &st
+	}
 	for _, w := range inv.Workloads {
 		st := portagev1alpha1.WorkloadActionStatus{Name: w.Name, Key: w.Key(), Class: w.Class, Engine: w.Engine}
 		if w.Class == portagev1alpha1.ClassStateless {
@@ -568,17 +591,16 @@ func (r *ActionReconciler) runReplicate(ctx context.Context, act *portagev1alpha
 			continue
 		}
 		if clusterobjects.Is(w) {
-			ok, msg, err := r.syncClusterObjectsLive(ctx, pol, pair, ep)
-			if err != nil {
-				failed = err.Error()
-				st.Message = failed
-			} else {
-				st.Ready, st.ProbeOK, st.Probe, st.Message = ok, ok, msg, msg
-				if !ok && failed == "" {
-					failed = "waiting for replica sync: " + msg
+			if clusterSt != nil {
+				workloadsStatus = append(workloadsStatus, *clusterSt)
+			}
+			if clusterFailed != "" {
+				// A hard sync error replaces an earlier mover error. A not-yet
+				// attested graph does not hide a mover failure recorded above.
+				if failed == "" || !strings.HasPrefix(clusterFailed, "waiting for replica sync") {
+					failed = clusterFailed
 				}
 			}
-			workloadsStatus = append(workloadsStatus, st)
 			continue
 		}
 		m, cap, err := reg.Select(ctx, w, moverOverride(pol, w, "replicate"))

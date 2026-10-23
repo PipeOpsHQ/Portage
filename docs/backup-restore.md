@@ -77,12 +77,28 @@ both the CRD object and its instances:
 Dest admission, Gateway API experimental-vs-standard channel, and version
 skew are the usual reasons.
 Other cluster-scoped APIs (Namespaces in the selector,
-ClusterRoles/Bindings, ClusterIssuers, …) are included by default
+ClusterRoles/Bindings, ClusterIssuers, Tenants, …) are included by default
 (`includeClusterScoped: true`). Nodes, PVs, StorageClasses, CSI, ServiceCIDRs,
 CapsuleConfiguration, VolSync CRs, dest-local backup CRs (`k8up.io`,
 `velero.io`, `stash.appscode.com`), admission webhooks, and `system:` RBAC stay
 dest-local. Source objects with `deletionTimestamp` are Deleted on dest.
 Dest Update retries 409 Conflict.
+
+**Capsule** (0.14 and later) owns a namespace only when the create call is
+authenticated as a registered owner of that Tenant. The
+`capsule.clastix.io/tenant` label is not enough, and adding it later to a
+namespace that already exists is rejected. On the destination, add the
+Portage ServiceAccount to `Tenant.spec.owners` (`kind: ServiceAccount`,
+`name: system:serviceaccount:<portage-namespace>:<portage-sa>`) before
+Replicate creates the namespace. Tenants are cluster-scoped and are copied
+ahead of Namespaces. If a previous run already created the namespace without
+that ownerReference, delete it (this also deletes PVCs replicated into it)
+and let the next reconcile create it as the owner. The Action status says
+this when admission rejects the namespace; it does not keep applying a
+patch Capsule will never accept. Replicate still does not create
+Deployments, StatefulSets, or DaemonSets — those stay on Restore / GitOps.
+A missing stateless Deployment on a live Replicate is that check, not a
+failed namespace sync.
 
 STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 `403` list is skipped (not silently dropped from a GVR we could read).

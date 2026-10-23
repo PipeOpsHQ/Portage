@@ -228,6 +228,12 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 		if !ref.Namespaced {
 			list, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
 			if skipListErr(err) {
+				// A forbidden Tenant list used to be skipped like any other
+				// CRD the SA cannot see. The namespace then lands with the
+				// Capsule label and no Tenant on dest, which admission rejects.
+				if forbiddenCapsuleTenant(gvr, err) {
+					return nil, fmt.Errorf("list %s: %w", gvr.String(), err)
+				}
 				continue
 			}
 			if err != nil {
@@ -274,6 +280,10 @@ func List(ctx context.Context, dyn dynamic.Interface, gvrs []Ref, namespaces []s
 
 func skipListErr(err error) bool {
 	return err != nil && (errors.IsForbidden(err) || errors.IsNotFound(err) || errors.IsMethodNotSupported(err))
+}
+
+func forbiddenCapsuleTenant(gvr schema.GroupVersionResource, err error) bool {
+	return gvr.Group == capsuleGroup && gvr.Resource == "tenants" && errors.IsForbidden(err)
 }
 
 func skipObj(gvr schema.GroupVersionResource, obj *unstructured.Unstructured, exclude []string) bool {

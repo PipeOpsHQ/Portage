@@ -18,9 +18,11 @@ package volsync
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,10 +30,57 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynfake "k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
+	"github.com/PipeOpsHQ/portage/pkg/clusterobjects"
 )
+
+func TestEnsureNamespaceCopiesCapsuleLabelAndLeavesExisting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	kube := k8sfake.NewSimpleClientset()
+	labels := map[string]string{clusterobjects.TenantLabel: "acme"}
+	if err := ensureNamespace(ctx, kube, "app", labels); err != nil {
+		t.Fatal(err)
+	}
+	got, err := kube.CoreV1().Namespaces().Get(ctx, "app", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Labels[clusterobjects.TenantLabel] != "acme" {
+		t.Fatalf("labels %#v", got.Labels)
+	}
+	// A second call must not patch an existing namespace. Capsule will not
+	// adopt one that was created without the label.
+	if err := ensureNamespace(ctx, kube, "app", map[string]string{clusterobjects.TenantLabel: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = kube.CoreV1().Namespaces().Get(ctx, "app", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Labels[clusterobjects.TenantLabel] != "acme" {
+		t.Fatalf("existing namespace was relabeled: %#v", got.Labels)
+	}
+}
+
+func TestEnsureNamespaceSurfacesCapsuleDenial(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	kube := k8sfake.NewSimpleClientset()
+	kube.PrependReactor("create", "namespaces", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewBadRequest(`admission webhook "namespaces.projectcapsule.dev" denied the request: can not assign the desired namespace to a non-owned Tenant`)
+	})
+	err := ensureNamespace(ctx, kube, "app", map[string]string{clusterobjects.TenantLabel: "acme"})
+	if err == nil || !strings.Contains(err.Error(), "spec.owners") {
+		t.Fatalf("got %v", err)
+	}
+	if _, getErr := kube.CoreV1().Namespaces().Get(ctx, "app", metav1.GetOptions{}); !apierrors.IsNotFound(getErr) {
+		t.Fatalf("denied create must not leave a namespace, get %v", getErr)
+	}
+}
 
 func TestEnsureDestPVCCopiesSizeAndRemapsStorageClass(t *testing.T) {
 	t.Parallel()

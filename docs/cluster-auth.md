@@ -213,6 +213,34 @@ GCP IAM on the hub identity:
   endpoint + CA)
 - Kubernetes RBAC on the GKE cluster for that Google identity
 
+## Capsule tenants
+
+Capsule 0.14 assigns a Tenant `ownerReference` only when the request that
+creates the namespace is authenticated as one of that Tenant's owners. The
+destination identity Portage uses (the cloud identity or the kubeconfig user
+above) has to be listed on the destination Tenant:
+
+```yaml
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: minimal-domain
+spec:
+  owners:
+    - kind: ServiceAccount
+      name: system:serviceaccount:tenant-system:pipeops-f4691a9a
+    - kind: ServiceAccount
+      name: system:serviceaccount:portage-system:portage-controller
+```
+
+The second entry is the Portage destination ServiceAccount. Use the name
+that cluster shows for the identity Portage actually presents
+(`system:serviceaccount:<namespace>:<name>`, or the cloud user's name when
+auth is AWS / Azure / GCP). Create that Tenant on the destination first
+(Replicate copies it when `clusterObjects.includeClusterScoped` is true).
+A namespace created before this owner is registered is not adopted later.
+Delete it and reconcile again.
+
 ## Private API servers
 
 | Provider | Field |

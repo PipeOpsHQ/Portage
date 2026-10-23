@@ -20,14 +20,18 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
 
 var applyOrder = map[string]int{
+	// Capsule will not own a namespace until the Tenant exists on dest.
+	"tenants":                   -1,
 	"namespaces":                0,
 	"customresourcedefinitions": 1,
 	"clusterroles":              2,
@@ -99,6 +103,9 @@ func syncOne(ctx context.Context, dyn dynamic.Interface, it Item) error {
 	it.Obj.SetDeletionTimestamp(nil)
 	it.Obj.SetDeletionGracePeriodSeconds(nil)
 	obj := it.Obj.DeepCopy()
+	if it.GVR.Resource == "namespaces" {
+		return syncNamespace(ctx, dyn, r, obj)
+	}
 	_, err := r.Create(ctx, obj, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		err = updateWithRetry(ctx, r, obj, 4)
@@ -112,6 +119,77 @@ func syncOne(ctx context.Context, dyn dynamic.Interface, it Item) error {
 	return nil
 }
 
+// tenantGVRs are the Capsule Tenant versions a destination may serve.
+// Preferred discovery on the source can be either; the object is cluster-scoped.
+var tenantGVRs = []schema.GroupVersionResource{
+	{Group: capsuleGroup, Version: "v1beta2", Resource: "tenants"},
+	{Group: capsuleGroup, Version: "v1beta1", Resource: "tenants"},
+}
+
+func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.ResourceInterface, obj *unstructured.Unstructured) error {
+	name := obj.GetName()
+	tenant := CapsuleTenant(obj)
+	if tenant != "" {
+		ok, err := destTenantExists(ctx, dyn, tenant)
+		if err != nil {
+			return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant))
+		}
+		if !ok {
+			return fmt.Errorf("sync Namespace/%s: %s", name, MissingTenant(name, tenant))
+		}
+	}
+	_, err := r.Create(ctx, obj, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		cur, getErr := r.Get(ctx, name, metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("sync Namespace/%s: %w", name, getErr)
+		}
+		// Ownership is assigned only on create. Patching the label onto a
+		// namespace Portage already created bare is rejected forever.
+		if tenant != "" && !HasCapsuleOwner(cur) {
+			return fmt.Errorf("sync Namespace/%s: %s", name, UnmanagedNamespace(name, tenant))
+		}
+		err = updateWithRetry(ctx, r, obj, 4)
+	}
+	// NotFound and MethodNotSupported are the list-skip cases. Forbidden is
+	// how Capsule admission.Denied comes back (403). Treating that as a skip
+	// drops the owner-registration error and the Action only reports the
+	// namespace as missing.
+	if errors.IsNotFound(err) || errors.IsMethodNotSupported(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant))
+	}
+	return nil
+}
+
+func destTenantExists(ctx context.Context, dyn dynamic.Interface, name string) (bool, error) {
+	var denied error
+	for _, gvr := range tenantGVRs {
+		_, err := dyn.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+		if err == nil {
+			return true, nil
+		}
+		if errors.IsNotFound(err) || isNoMatch(err) {
+			continue
+		}
+		denied = err
+	}
+	if denied != nil {
+		return false, denied
+	}
+	return false, nil
+}
+
+func isNoMatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "no matches for") || strings.Contains(s, "could not find the requested resource") || strings.Contains(s, "not registered")
+}
+
 func updateWithRetry(ctx context.Context, r dynamic.ResourceInterface, obj *unstructured.Unstructured, attempts int) error {
 	var err error
 	for i := 0; i < attempts; i++ {
@@ -121,8 +199,11 @@ func updateWithRetry(ctx context.Context, r dynamic.ResourceInterface, obj *unst
 		}
 		obj.SetResourceVersion(cur.GetResourceVersion())
 		obj.SetUID(cur.GetUID())
+		KeepDestCapsuleOwners(obj, cur)
 		_, err = r.Update(ctx, obj, metav1.UpdateOptions{})
-		if err == nil || skipListErr(err) {
+		// Forbidden must propagate. syncOne still skips it for other
+		// resources; syncNamespace reports it.
+		if err == nil || errors.IsNotFound(err) || errors.IsMethodNotSupported(err) {
 			return nil
 		}
 		if !errors.IsConflict(err) {

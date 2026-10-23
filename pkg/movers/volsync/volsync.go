@@ -165,7 +165,11 @@ func (m Mover) Replicate(ctx context.Context, w classify.Workload, _, _ movers.C
 		}
 	}
 	if dk := m.destKube(); dk != nil && dk != m.Kube {
-		if err := ensureNamespace(ctx, dk, w.Namespace); err != nil {
+		labels, err := sourceCapsuleLabels(ctx, m.Kube, w.Namespace)
+		if err != nil {
+			return fmt.Errorf("volsync dest namespace: %w", err)
+		}
+		if err := ensureNamespace(ctx, dk, w.Namespace, labels); err != nil {
 			return fmt.Errorf("volsync dest namespace: %w", err)
 		}
 		if needsPrivilegedMover(w) {
