@@ -25,9 +25,12 @@ import (
 )
 
 // TenantLabel is the Capsule label that names the Tenant for a Namespace.
-// Capsule 0.14 rejects the object unless a Tenant ownerReference is present
-// as well, and it writes that ownerReference only when the caller is a
-// registered owner of the Tenant. A label by itself is not ownership.
+// Capsule 0.14's validating webhook rejects the object unless a Tenant
+// ownerReference is present as well. The mutating webhook writes that
+// ownerReference only when the caller is a Capsule user or a Capsule
+// administrator, and then only when that subject owns the Tenant.
+// Tenant spec.owners does not by itself make the caller a Capsule user.
+// A label by itself is not ownership.
 const TenantLabel = "capsule.clastix.io/tenant"
 
 const capsuleGroup = "capsule.clastix.io"
@@ -147,6 +150,10 @@ func ownerIdentity(owner any) (string, bool) {
 // client. An empty caller keeps the hint from naming a hub ServiceAccount
 // that is not the caller on azure, aws, gcp, or kubeconfig destinations.
 func AnnotateNamespaceError(err error, namespace, tenant string, caller Caller) error {
+	return annotateNamespaceError(err, namespace, tenant, caller, capsuleAccess{})
+}
+
+func annotateNamespaceError(err error, namespace, tenant string, caller Caller, access capsuleAccess) error {
 	if err == nil || tenant == "" {
 		return err
 	}
@@ -156,18 +163,19 @@ func AnnotateNamespaceError(err error, namespace, tenant string, caller Caller) 
 		strings.Contains(s, "only tenant owners") ||
 		strings.Contains(s, "no Tenant ownerReference"):
 		// Create was rejected. The namespace is not on dest, so there is
-		// nothing to delete. The caller has to be a Tenant owner.
-		return fmt.Errorf("%w. %s", err, ownerHint(tenant, caller))
+		// nothing to delete. The caller has to be a Capsule user and a
+		// Tenant owner. Tenant spec.owners alone is not the Capsule user list.
+		return fmt.Errorf("%w. %s", err, ownerHint(tenant, caller, access))
 	case strings.Contains(s, "patched into a tenant") ||
 		strings.Contains(s, "both be set"):
-		return fmt.Errorf("%w. %s", err, UnmanagedNamespace(namespace, tenant, caller))
+		return fmt.Errorf("%w. %s", err, unmanagedNamespace(namespace, tenant, caller, access))
 	case strings.Contains(s, "not found") && strings.Contains(s, "tenants.capsule"):
 		return fmt.Errorf("%w. %s", err, MissingTenant(namespace, tenant))
 	default:
 		// Webhook denials we do not recognize still need the owner step.
 		// A plain RBAC Forbidden on tenants.capsule.clastix.io does not.
 		if strings.Contains(s, "projectcapsule") || strings.Contains(s, "admission webhook") {
-			return fmt.Errorf("%w. %s", err, ownerHint(tenant, caller))
+			return fmt.Errorf("%w. %s", err, ownerHint(tenant, caller, access))
 		}
 		return err
 	}
@@ -176,9 +184,13 @@ func AnnotateNamespaceError(err error, namespace, tenant string, caller Caller) 
 // UnmanagedNamespace is the permanent-failure text for a destination
 // namespace Capsule will not adopt after the fact.
 func UnmanagedNamespace(namespace, tenant string, caller Caller) string {
+	return unmanagedNamespace(namespace, tenant, caller, capsuleAccess{})
+}
+
+func unmanagedNamespace(namespace, tenant string, caller Caller, access capsuleAccess) string {
 	return fmt.Sprintf(
 		"destination namespace %q exists without a Tenant ownerReference for %q. Capsule will not adopt it when the label is added later. %s Then delete namespace %q and retry so the next create is authenticated as that owner. Deleting the namespace also deletes PVCs replicated into it",
-		namespace, tenant, ownerHint(tenant, caller), namespace,
+		namespace, tenant, ownerHint(tenant, caller, access), namespace,
 	)
 }
 
@@ -191,15 +203,15 @@ func MissingTenant(namespace, tenant string) string {
 	)
 }
 
-func ownerHint(tenant string, caller Caller) string {
-	if caller.Name != "" {
+func ownerHint(tenant string, caller Caller, access capsuleAccess) string {
+	if caller.Name == "" {
 		return fmt.Sprintf(
-			"Capsule sets a Tenant ownerReference only when the caller is a registered owner of Tenant %q. The destination API server authenticated Portage as %s %q. Add that subject to destination Tenant %q spec.owners (kind: %s, name: %q). SelfSubjectReview on the destination client reported this subject. For an Entra token (destination.azure.credentialsSecret) the username is the service principal object ID, the token oid claim",
-			tenant, caller.Kind, caller.Name, tenant, caller.Kind, caller.Name,
+			"Capsule's namespace mutating webhook writes a Tenant ownerReference only for a Capsule user or a Capsule administrator. Tenant %q spec.owners does not grant that, so the validating webhook then rejects the tenant label with no ownerReference. SelfSubjectReview did not return a username. When the destination is this cluster the subject is kind ServiceAccount, name system:serviceaccount:<portage-namespace>:<portage-sa>. When destination.azure.credentialsSecret is set, the subject is kind User and the name is the service principal object ID (the token oid claim, which kubectl auth whoami prints). The kubeconfig user clusterUser and the application clientID are different values. Register that subject on Tenant %q spec.owners and on CapsuleConfiguration spec.users with the same kind and name. The default Capsule user group is projectcapsule.dev, which an Entra service principal token does not carry",
+			tenant, tenant,
 		)
 	}
 	return fmt.Sprintf(
-		"Capsule sets a Tenant ownerReference only when the caller is a registered owner of Tenant %q. Add the subject the destination API server reports for this client to Tenant %q spec.owners. SelfSubjectReview did not return a username. When the destination is this cluster the subject is kind ServiceAccount, name system:serviceaccount:<portage-namespace>:<portage-sa>. When destination.azure.credentialsSecret is set, the subject is kind User and the name is the service principal object ID (the token oid claim, which kubectl auth whoami prints). The kubeconfig user clusterUser and the application clientID are different values",
-		tenant, tenant,
+		"The destination API server authenticated Portage as %s %q. SelfSubjectReview on the destination client reported this subject. For an Entra token (destination.azure.credentialsSecret) the username is the service principal object ID, the token oid claim. %s",
+		caller.Kind, caller.Name, capsuleGap(tenant, caller, access),
 	)
 }

@@ -905,11 +905,78 @@ func TestSyncNamesEntraCallerOnCapsuleDenial(t *testing.T) {
 		t.Fatal("expected admission error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "kind: User") || !strings.Contains(msg, oid) || !strings.Contains(msg, "spec.owners") {
+	if !strings.Contains(msg, "kind: User") || !strings.Contains(msg, oid) || !strings.Contains(msg, "spec.owners") || !strings.Contains(msg, "spec.users") {
 		t.Fatalf("got %v", err)
 	}
 	if strings.Contains(msg, "portage-controller") {
 		t.Fatalf("hub ServiceAccount must not be the named caller: %v", err)
+	}
+}
+
+func TestSyncExplainsTenantOwnerWhoIsNotACapsuleUser(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfgGVR := schema.GroupVersionResource{Group: "capsule.clastix.io", Version: "v1beta2", Resource: "capsuleconfigurations"}
+	dst := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		cfgGVR: "CapsuleConfigurationList",
+	})
+	const oid = "396e2032-ba4e-4ebf-ae71-1bbc85666502"
+	tenant := capsuleTenant("elegant-network")
+	owner := map[string]any{"kind": "User", "name": oid, "clusterRoles": []any{"admin"}}
+	group := map[string]any{"kind": "Group", "name": oid}
+	_ = unstructured.SetNestedSlice(tenant.Obj.Object, []any{owner, group}, "spec", "owners")
+	_ = unstructured.SetNestedSlice(tenant.Obj.Object, []any{owner, group}, "status", "owners")
+	if _, err := dst.Resource(tenantGVR()).Create(ctx, tenant.Obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "capsule.clastix.io/v1beta2",
+		"kind":       "CapsuleConfiguration",
+		"metadata":   map[string]any{"name": "default"},
+		"spec": map[string]any{
+			"users": []any{map[string]any{"kind": "Group", "name": "projectcapsule.dev"}},
+		},
+		"status": map[string]any{
+			"users": []any{map[string]any{"kind": "Group", "name": "projectcapsule.dev"}},
+		},
+	}}
+	if _, err := dst.Resource(cfgGVR).Create(ctx, cfg, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dst.PrependReactor("create", "selfsubjectreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "authentication.k8s.io/v1",
+			"kind":       "SelfSubjectReview",
+			"status": map[string]any{
+				"userInfo": map[string]any{
+					"username": oid,
+					"groups":   []any{"system:authenticated"},
+				},
+			},
+		}}, nil
+	})
+	dst.PrependReactor("create", "namespaces", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, "app",
+			fmt.Errorf("admission webhook %q denied the request: namespace has tenant label %q but no Tenant ownerReference", "namespaces.validating.projectcapsule.dev", "elegant-network"))
+	})
+	err := Sync(ctx, dst, []Item{capsuleNamespace("app", "elegant-network")})
+	if err == nil {
+		t.Fatal("expected admission error")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"status.owners already lists User",
+		oid,
+		`CapsuleConfiguration "default" status.users does not`,
+		"spec.users",
+		"projectcapsule.dev is not among them",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "portage-controller") {
+		t.Fatalf("hub ServiceAccount named: %s", msg)
 	}
 }
 

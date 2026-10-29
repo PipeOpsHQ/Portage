@@ -14,6 +14,17 @@
 
 ### Fixed
 
+- Capsule namespace admission tells the operator when the SelfSubjectReview
+  subject is already a Tenant owner and is still not a Capsule user. Capsule
+  0.14 stamps the Tenant ownerReference only from the namespace mutating
+  webhook, and that webhook runs only for a Capsule user or a Capsule
+  administrator. `CapsuleConfiguration.status.users` is that list. It is
+  copied from `spec.users` and from `TenantOwner` objects, not from
+  `Tenant.spec.owners`. An Entra service principal added only to the Tenant
+  is skipped, and the validating webhook then rejects the tenant label with
+  no ownerReference. The error names `CapsuleConfiguration spec.users` for
+  that subject. When the destination can be read, it says whether
+  `status.owners` and `status.users` already contain the subject.
 - Capsule admission names the subject the destination API server
   authenticated (`SelfSubjectReview`), and tells the operator to add that
   subject to destination `Tenant.spec.owners`. For

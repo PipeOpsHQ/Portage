@@ -145,7 +145,7 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 	if tenant != "" {
 		ok, err := destTenantExists(ctx, dyn, tenant)
 		if err != nil {
-			return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant, subject()))
+			return fmt.Errorf("sync Namespace/%s: %w", name, annotateNamespaceError(err, name, tenant, subject(), observeCapsuleCaller(ctx, dyn, tenant, subject())))
 		}
 		if !ok {
 			return fmt.Errorf("sync Namespace/%s: %s", name, MissingTenant(name, tenant))
@@ -160,7 +160,7 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 		// Ownership is assigned only on create. Patching the label onto a
 		// namespace Portage already created bare is rejected forever.
 		if tenant != "" && !HasCapsuleOwner(cur) {
-			return fmt.Errorf("sync Namespace/%s: %s", name, UnmanagedNamespace(name, tenant, subject()))
+			return fmt.Errorf("sync Namespace/%s: %s", name, unmanagedNamespace(name, tenant, subject(), observeCapsuleCaller(ctx, dyn, tenant, subject())))
 		}
 		err = updateWithRetry(ctx, r, obj, 4)
 	}
@@ -172,7 +172,7 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant, subject()))
+		return fmt.Errorf("sync Namespace/%s: %w", name, annotateNamespaceError(err, name, tenant, subject(), observeCapsuleCaller(ctx, dyn, tenant, subject())))
 	}
 	return nil
 }

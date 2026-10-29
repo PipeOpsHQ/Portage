@@ -33,10 +33,13 @@ const serviceAccountUsernamePrefix = "system:serviceaccount:"
 // Caller is the subject the destination API server authenticated for this
 // client. Kind is ServiceAccount only when the username has the
 // system:serviceaccount: prefix. Every other username, including an Entra
-// object ID, is a User. Name is the full username.
+// object ID, is a User. Name is the full username. Groups are the groups
+// on that same SelfSubjectReview. Capsule treats a Group owner as a match
+// only when one of these groups equals the owner name.
 type Caller struct {
-	Kind string
-	Name string
+	Kind   string
+	Name   string
+	Groups []string
 }
 
 func subjectFromUsername(username string) Caller {
@@ -72,7 +75,10 @@ func CallerFromDynamic(ctx context.Context, dyn dynamic.Interface) Caller {
 		return Caller{}
 	}
 	username, _, _ := unstructured.NestedString(created.Object, "status", "userInfo", "username")
-	return subjectFromUsername(username)
+	groups, _, _ := unstructured.NestedStringSlice(created.Object, "status", "userInfo", "groups")
+	caller := subjectFromUsername(username)
+	caller.Groups = groups
+	return caller
 }
 
 // CallerFromKube is CallerFromDynamic for a typed clientset. A client that
@@ -94,5 +100,7 @@ func CallerFromKube(ctx context.Context, kube kubernetes.Interface) (caller Call
 	if err != nil || review == nil {
 		return Caller{}
 	}
-	return subjectFromUsername(review.Status.UserInfo.Username)
+	caller = subjectFromUsername(review.Status.UserInfo.Username)
+	caller.Groups = review.Status.UserInfo.Groups
+	return caller
 }

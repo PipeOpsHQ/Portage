@@ -84,13 +84,20 @@ CapsuleConfiguration, VolSync CRs, dest-local backup CRs (`k8up.io`,
 dest-local. Source objects with `deletionTimestamp` are Deleted on dest.
 Dest Update retries 409 Conflict.
 
-**Capsule** (0.14 and later) owns a namespace only when the create call is
-authenticated as a registered owner of that Tenant. The
-`capsule.clastix.io/tenant` label is not enough, and adding it later to a
-namespace that already exists is rejected. Add the subject the destination
-API server reports for the Portage client to that Tenant's `spec.owners`
-(`kubectl auth whoami` with the same credentials). The Action error names
-the subject `SelfSubjectReview` returned.
+**Capsule** (0.14 and later) owns a namespace only when the namespace
+mutating webhook runs for the create. That webhook runs for a Capsule user
+or a Capsule administrator, and it stamps the Tenant `ownerReference` only
+when that subject is also an owner of the labeled Tenant. The validating
+webhook then rejects a tenant label with no ownerReference. Capsule users
+live on `CapsuleConfiguration.status.users` (from `spec.users`, or from a
+`TenantOwner` with `spec.aggregate` left at its default). `Tenant.spec.owners`
+is a different list. The default Capsule user group is `projectcapsule.dev`,
+which an Entra service principal token does not carry. Add the subject the
+destination API server reports (`kubectl auth whoami` with the same
+credentials, or the `SelfSubjectReview` username in the Action error) to
+both `Tenant.spec.owners` and `CapsuleConfiguration.spec.users`. The label
+alone is not enough, and adding it later to a namespace that already exists
+is rejected.
 
 When the destination is this cluster the subject is `kind: ServiceAccount`,
 `name: system:serviceaccount:<portage-namespace>:<portage-sa>`. When

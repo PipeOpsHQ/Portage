@@ -223,14 +223,70 @@ GCP IAM on the hub identity:
 
 ## Capsule tenants
 
-Capsule 0.14 assigns a Tenant `ownerReference` only when the request that
-creates the namespace is authenticated as one of that Tenant's owners.
-Read the subject from the destination client (`kubectl auth whoami`, or the
-username in the Action error). Add that subject to the destination Tenant.
+Capsule 0.14 assigns a Tenant `ownerReference` in the namespace mutating
+webhook, and only when that caller is a Capsule user or a Capsule
+administrator. The validating webhook then requires the ownerReference
+whenever `capsule.clastix.io/tenant` is set. A subject listed only on
+`Tenant.spec.owners` owns that Tenant, and is not a Capsule user.
 
-In-cluster destination (the hub ServiceAccount is the caller):
+Capsule users are `CapsuleConfiguration.status.users`. The configuration
+controller copies `spec.users` (and a `TenantOwner` whose `spec.aggregate`
+is left at the default `true`) into that status. The default entry is the
+group `projectcapsule.dev`. An Entra service principal token does not carry
+that group. `kubectl auth whoami` on the destination credentials, or the
+username in the Action error, is the subject to register. Register it in
+both places:
 
 ```yaml
+apiVersion: capsule.clastix.io/v1beta2
+kind: CapsuleConfiguration
+metadata:
+  name: default
+spec:
+  users:
+    - kind: User
+      name: 11111111-2222-3333-4444-555555555555
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: minimal-domain
+spec:
+  owners:
+    - kind: User
+      name: 11111111-2222-3333-4444-555555555555
+      clusterRoles: ["admin"]
+```
+
+A single `TenantOwner` does both jobs. `spec.aggregate` defaults to true,
+which puts the subject in `status.users`, and the label matches the Tenant:
+
+```yaml
+apiVersion: capsule.clastix.io/v1beta2
+kind: TenantOwner
+metadata:
+  name: portage-minimal-domain
+  labels:
+    projectcapsule.dev/tenant: minimal-domain
+spec:
+  kind: User
+  name: 11111111-2222-3333-4444-555555555555
+  clusterRoles: ["admin"]
+```
+
+In-cluster destination (the hub ServiceAccount is the caller), same two
+registrations, `kind: ServiceAccount`:
+
+```yaml
+apiVersion: capsule.clastix.io/v1beta2
+kind: CapsuleConfiguration
+metadata:
+  name: default
+spec:
+  users:
+    - kind: ServiceAccount
+      name: system:serviceaccount:portage-system:portage-controller
+---
 apiVersion: capsule.clastix.io/v1beta2
 kind: Tenant
 metadata:
@@ -245,14 +301,9 @@ spec:
 
 Azure Entra destination (`destination.azure.credentialsSecret`, no client
 certificate in the user kubeconfig). `kind` is `User`. `name` is the
-service principal object ID:
-
-```yaml
-spec:
-  owners:
-    - kind: User
-      name: 11111111-2222-3333-4444-555555555555
-```
+service principal object ID, on both objects above. Adding that User to
+`Tenant.spec.owners` and leaving `CapsuleConfiguration` unchanged does not
+admit the namespace.
 
 `clusterUser` is the API username only on the client-certificate path
 described above. AWS and GCP follow the same rule: the username is whatever
