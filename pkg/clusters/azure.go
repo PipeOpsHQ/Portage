@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v6"
@@ -62,7 +63,13 @@ func (r Resolver) azureREST(ctx context.Context, ref portagev1alpha1.ClusterRef)
 	if err != nil {
 		return nil, err
 	}
-	client, err := armcontainerservice.NewManagedClustersClient(ids.Subscription, cred, nil)
+	// A hung ARM call used to sit inside the worker with no log line.
+	// TryTimeout bounds one HTTP try. MaxRetries bounds the follow-ups.
+	client, err := armcontainerservice.NewManagedClustersClient(ids.Subscription, cred, &arm.ClientOptions{
+		ClientOptions: policy.ClientOptions{
+			Retry: policy.RetryOptions{MaxRetries: 2, TryTimeout: 20 * time.Second},
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -129,10 +129,23 @@ var tenantGVRs = []schema.GroupVersionResource{
 func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.ResourceInterface, obj *unstructured.Unstructured) error {
 	name := obj.GetName()
 	tenant := CapsuleTenant(obj)
+	// SelfSubjectReview only on the error path. A successful create does
+	// not need to know which subject the apiserver saw.
+	var caller Caller
+	var lookedUp bool
+	subject := func() Caller {
+		if !lookedUp {
+			lookedUp = true
+			if tenant != "" {
+				caller = CallerFromDynamic(ctx, dyn)
+			}
+		}
+		return caller
+	}
 	if tenant != "" {
 		ok, err := destTenantExists(ctx, dyn, tenant)
 		if err != nil {
-			return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant))
+			return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant, subject()))
 		}
 		if !ok {
 			return fmt.Errorf("sync Namespace/%s: %s", name, MissingTenant(name, tenant))
@@ -147,7 +160,7 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 		// Ownership is assigned only on create. Patching the label onto a
 		// namespace Portage already created bare is rejected forever.
 		if tenant != "" && !HasCapsuleOwner(cur) {
-			return fmt.Errorf("sync Namespace/%s: %s", name, UnmanagedNamespace(name, tenant))
+			return fmt.Errorf("sync Namespace/%s: %s", name, UnmanagedNamespace(name, tenant, subject()))
 		}
 		err = updateWithRetry(ctx, r, obj, 4)
 	}
@@ -159,7 +172,7 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant))
+		return fmt.Errorf("sync Namespace/%s: %w", name, AnnotateNamespaceError(err, name, tenant, subject()))
 	}
 	return nil
 }
@@ -200,6 +213,7 @@ func updateWithRetry(ctx context.Context, r dynamic.ResourceInterface, obj *unst
 		obj.SetResourceVersion(cur.GetResourceVersion())
 		obj.SetUID(cur.GetUID())
 		KeepDestCapsuleOwners(obj, cur)
+		KeepDestTenantOwners(obj, cur)
 		_, err = r.Update(ctx, obj, metav1.UpdateOptions{})
 		// Forbidden must propagate. syncOne still skips it for other
 		// resources; syncNamespace reports it.

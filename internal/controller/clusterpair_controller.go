@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -66,10 +67,26 @@ func (r *ClusterPairReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		pair.Status.Phase = portagev1alpha1.ClusterPairDegraded
 		pair.Status.Message = dstMsg
 	}
-	if err := r.Status().Update(ctx, pair); err != nil {
-		return ctrl.Result{}, err
+	if err := r.writeStatus(ctx, pair); err != nil {
+		return retryLater(ctx, err)
 	}
 	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+}
+
+func (r *ClusterPairReconciler) writeStatus(ctx context.Context, pair *portagev1alpha1.ClusterPair) error {
+	key := client.ObjectKeyFromObject(pair)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &portagev1alpha1.ClusterPair{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		latest.Status.Phase = pair.Status.Phase
+		latest.Status.Message = pair.Status.Message
+		latest.Status.SourceReachable = pair.Status.SourceReachable
+		latest.Status.DestinationReachable = pair.Status.DestinationReachable
+		latest.Status.ObservedGeneration = pair.Status.ObservedGeneration
+		return r.Status().Update(ctx, latest)
+	})
 }
 
 func (r *ClusterPairReconciler) ping(ctx context.Context, kube kubernetes.Interface) bool {

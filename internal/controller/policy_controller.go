@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -64,7 +65,7 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if r.KubeClient == nil {
-		return ctrl.Result{}, fmt.Errorf("kube client is not configured")
+		return retryLater(ctx, fmt.Errorf("kube client is not configured"))
 	}
 
 	pair := r.loadPair(ctx, pol)
@@ -83,11 +84,12 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	nss := classify.Namespaces(pol.Spec.Selector.Namespaces, pol.Namespace)
 	inv, err := classify.Walk(ctx, srcKube, nss)
 	if err != nil {
-		logger.Error(err, "classify")
 		pol.Status.Phase = portagev1alpha1.PolicyUnhealthy
 		pol.Status.Message = err.Error()
-		_ = r.Status().Update(ctx, pol)
-		return ctrl.Result{}, err
+		if werr := r.writeStatus(ctx, pol); werr != nil {
+			logger.Error(werr, "record classify failure")
+		}
+		return retryLater(ctx, fmt.Errorf("classify: %w", err))
 	}
 	inv = withClusterObjects(pol, inv)
 
@@ -140,8 +142,8 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		pol.Status.Message = fmt.Sprintf("%d workloads (%d stateful)", len(items), stateful)
 	}
 
-	if err := r.Status().Update(ctx, pol); err != nil {
-		return ctrl.Result{}, err
+	if err := r.writeStatus(ctx, pol); err != nil {
+		return retryLater(ctx, err)
 	}
 	if err := r.maybeAutoRestore(ctx, pol, inv, dstKube); err != nil {
 		logger.Error(err, "auto-restore")
@@ -153,10 +155,15 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		logger.Error(err, "live replicate")
 	}
 	if lag := r.replicaLag(ctx, pol); lag != "" && lag != pol.Status.ReplicaLag {
-		latest := &portagev1alpha1.Policy{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err == nil {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &portagev1alpha1.Policy{}
+			if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+				return err
+			}
 			latest.Status.ReplicaLag = lag
-			_ = r.Status().Update(ctx, latest)
+			return r.Status().Update(ctx, latest)
+		}); err != nil {
+			return retryLater(ctx, err)
 		}
 	}
 	requeue := 2 * time.Minute
@@ -164,6 +171,24 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		requeue = 30 * time.Second
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+func (r *PolicyReconciler) writeStatus(ctx context.Context, pol *portagev1alpha1.Policy) error {
+	key := client.ObjectKeyFromObject(pol)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &portagev1alpha1.Policy{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		// Artifacts and replica lag are written by other passes. A full
+		// status replace on conflict would drop the copy that just landed.
+		latest.Status.Phase = pol.Status.Phase
+		latest.Status.Message = pol.Status.Message
+		latest.Status.Inventory = pol.Status.Inventory
+		latest.Status.BackupHealthy = pol.Status.BackupHealthy
+		latest.Status.ObservedGeneration = pol.Status.ObservedGeneration
+		return r.Status().Update(ctx, latest)
+	})
 }
 
 func (r *PolicyReconciler) now() time.Time {
@@ -250,8 +275,20 @@ func (r *PolicyReconciler) maybeReplicate(ctx context.Context, pol *portagev1alp
 			existing.Labels = map[string]string{}
 		}
 		if existing.Labels["portage.io/live-replica"] != "true" {
-			existing.Labels["portage.io/live-replica"] = "true"
-			return r.Update(ctx, existing)
+			return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latest := &portagev1alpha1.Action{}
+				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pol.Namespace}, latest); err != nil {
+					return err
+				}
+				if latest.Labels == nil {
+					latest.Labels = map[string]string{}
+				}
+				if latest.Labels["portage.io/live-replica"] == "true" {
+					return nil
+				}
+				latest.Labels["portage.io/live-replica"] = "true"
+				return r.Update(ctx, latest)
+			})
 		}
 		return nil
 	}

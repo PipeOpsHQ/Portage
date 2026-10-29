@@ -162,6 +162,14 @@ admin kubeconfigs (client cert) are used as-is when the user kubeconfig has
 one; otherwise Portage mints an Entra token for the AKS server app
 (`6dae42f8-4368-4678-94ff-3960e28e3630`, override with `serverID`).
 
+On the client-certificate path the API username is the certificate subject,
+which for `listClusterUserCredential` is the kubeconfig user `clusterUser`.
+On the Entra path the API username is the service principal object ID (the
+token `oid` claim). `kubectl auth whoami` prints that object ID. The
+application `clientID` is the `appid` claim and is a different value. ARM
+calls to read the cluster and list that kubeconfig use a 20 second per-try
+timeout.
+
 ## GCP (GKE)
 
 ```yaml
@@ -216,9 +224,11 @@ GCP IAM on the hub identity:
 ## Capsule tenants
 
 Capsule 0.14 assigns a Tenant `ownerReference` only when the request that
-creates the namespace is authenticated as one of that Tenant's owners. The
-destination identity Portage uses (the cloud identity or the kubeconfig user
-above) has to be listed on the destination Tenant:
+creates the namespace is authenticated as one of that Tenant's owners.
+Read the subject from the destination client (`kubectl auth whoami`, or the
+username in the Action error). Add that subject to the destination Tenant.
+
+In-cluster destination (the hub ServiceAccount is the caller):
 
 ```yaml
 apiVersion: capsule.clastix.io/v1beta2
@@ -233,11 +243,34 @@ spec:
       name: system:serviceaccount:portage-system:portage-controller
 ```
 
-The second entry is the Portage destination ServiceAccount. Use the name
-that cluster shows for the identity Portage actually presents
-(`system:serviceaccount:<namespace>:<name>`, or the cloud user's name when
-auth is AWS / Azure / GCP). Create that Tenant on the destination first
-(Replicate copies it when `clusterObjects.includeClusterScoped` is true).
+Azure Entra destination (`destination.azure.credentialsSecret`, no client
+certificate in the user kubeconfig). `kind` is `User`. `name` is the
+service principal object ID:
+
+```yaml
+spec:
+  owners:
+    - kind: User
+      name: 11111111-2222-3333-4444-555555555555
+```
+
+`clusterUser` is the API username only on the client-certificate path
+described above. AWS and GCP follow the same rule: the username is whatever
+that cluster's API server puts on the request, which `kubectl auth whoami`
+prints for those credentials.
+
+Replicate copies the Tenant when `clusterObjects.includeClusterScoped` is
+true, and keeps destination `spec.owners` that the source Tenant does not
+list. An owner removed on the source stays on the destination while the
+destination object still has it. Other destination-only fields are
+overwritten. To leave the destination Tenant untouched, exclude it:
+
+```yaml
+clusterObjects:
+  excludeGVKs:
+    - capsule.clastix.io/Tenant
+```
+
 A namespace created before this owner is registered is not adopted later.
 Delete it and reconcile again.
 

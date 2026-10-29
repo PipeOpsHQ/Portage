@@ -14,6 +14,34 @@
 
 ### Fixed
 
+- Capsule admission names the subject the destination API server
+  authenticated (`SelfSubjectReview`), and tells the operator to add that
+  subject to destination `Tenant.spec.owners`. For
+  `destination.azure.credentialsSecret` the username is the Entra service
+  principal object ID (the token `oid` claim, which `kubectl auth whoami`
+  prints), `kind: User`. The kubeconfig user `clusterUser` is the API
+  username only when the user kubeconfig has a client certificate. The
+  application `clientID` is a different value. When the review returns no
+  username, the message still says to set `spec.owners` and spells out
+  those two values. The hub ServiceAccount is the caller only when the
+  destination is this cluster.
+- Cluster-object sync unions Capsule `Tenant.spec.owners` by kind and
+  name. A destination-only owner stays across the next sync, including
+  an owner the source has since dropped. Other destination-only fields
+  are still replaced by the source object. `clusterObjects.excludeGVKs`
+  entry `capsule.clastix.io/Tenant` stops mirroring that Tenant.
+  Namespace creates (cluster objects and the VolSync destination
+  namespace) use the same owner hint.
+- A reconcile error, including `the object has been modified`, is
+  retried. Status writes use `RetryOnConflict`. Any error that remains
+  is logged and the Action, Policy, or ClusterPair is requeued. Returning
+  that error made controller-runtime drop `RequeueAfter`, so one conflict
+  between the Policy label write and the Action status write stopped
+  further reconciles until the pod restarted. Every Action reconcile logs
+  its type, phase, and name before doing other work. Discovery is
+  abandoned after two minutes because client-go discovery ignores the
+  reconcile context. The discovery HTTP call can outlive that attempt
+  until the socket closes. AKS ARM calls use a 20s per-try timeout.
 - Cross-cluster clients cancel a timed-out request. The bearer transport
   cloned the request with `http.Request.Clone`, which drops `Request.Cancel`,
   and did not unwrap `CancelRequest`. After `rest.Config` timeout (~30s)
@@ -23,9 +51,9 @@
 - Capsule namespaces are created with `capsule.clastix.io/tenant` already
   set, and only after the destination Tenant exists. Tenants are applied
   before Namespaces. A destination namespace that already exists without a
-  Tenant ownerReference is not patched (Capsule will not adopt it); the
-  Action error says to register the Portage destination ServiceAccount on
-  `Tenant.spec.owners` and delete that namespace before retrying. A
+  Tenant ownerReference is not patched (Capsule will not adopt it). The
+  Action error names the destination subject (the bullet above) and says
+  to delete that namespace before retrying. A
   Forbidden or BadRequest admission denial on the namespace itself is
   returned with that owner step. It is not treated as a skipped list.
   Updates keep the destination Tenant ownerReference instead of stripping

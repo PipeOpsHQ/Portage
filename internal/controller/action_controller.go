@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -167,8 +168,12 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
+	// Every pass logs before any call that can block. A worker that holds
+	// the lease and then goes silent has nothing else an operator can see.
+	logger.Info("reconcile action", "type", act.Spec.Type, "phase", act.Status.Phase, "name", act.Name)
+
 	if r.Kube == nil {
-		return ctrl.Result{}, fmt.Errorf("kube client is not configured")
+		return retryLater(ctx, fmt.Errorf("kube client is not configured"))
 	}
 
 	pol := &portagev1alpha1.Policy{}
@@ -179,15 +184,10 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, act, "policy: "+err.Error())
 	}
 	if act.Status.Phase == "" {
-		// Log before the status write. A failed update returns the error
-		// with no other line, and the failure backoff used to climb to
-		// about 16 minutes while phase stayed "".
-		logger.Info("reconcile action", "type", act.Spec.Type, "phase", portagev1alpha1.ActionPhasePending)
 		act.Status.Phase = portagev1alpha1.ActionPhasePending
 		act.Status.Message = "pending"
-		if err := r.Status().Update(ctx, act); err != nil {
-			logger.Error(err, "mark action pending", "type", act.Spec.Type)
-			return ctrl.Result{}, err
+		if err := r.writeStatus(ctx, act); err != nil {
+			return retryLater(ctx, fmt.Errorf("mark action pending: %w", err))
 		}
 	}
 
@@ -197,15 +197,14 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	ep, err := r.endpoints(ctx, pair)
 	if err != nil {
-		logger.Error(err, "resolve ClusterPair")
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, err
+		return retryLater(ctx, fmt.Errorf("resolve ClusterPair: %w", err))
 	}
 	if ep.Source.Kube == nil {
 		ep.Source.Kube, ep.Source.Dynamic, ep.Source.Exec = r.Kube, r.Dynamic, r.Exec
 	}
 	if ep.Dest.Kube == nil {
 		if pair != nil && pair.Spec.Destination.HasRemoteAuth() {
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, fmt.Errorf("destination cluster client is empty")
+			return retryLater(ctx, fmt.Errorf("destination cluster client is empty"))
 		}
 		ep.Dest = ep.Source
 	}
@@ -213,8 +212,7 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	nss := classify.Namespaces(pol.Spec.Selector.Namespaces, pol.Namespace)
 	inv, err := classify.Walk(ctx, ep.Source.Kube, nss)
 	if err != nil {
-		logger.Error(err, "classify")
-		return ctrl.Result{}, err
+		return retryLater(ctx, fmt.Errorf("classify: %w", err))
 	}
 	inv = withClusterObjects(pol, inv)
 
@@ -237,7 +235,7 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, act, "unsupported action type "+string(act.Spec.Type))
 	}
 	if err != nil {
-		return ctrl.Result{}, err
+		return retryLater(ctx, err)
 	}
 	if pair != nil && ep.Dest.Name != "" {
 		res.Message = strings.TrimSpace(res.Message + "; dest=" + ep.Dest.Name)
@@ -254,8 +252,8 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		t := metav1.NewTime(r.now())
 		act.Status.CompletionTime = &t
 	}
-	if err := r.Status().Update(ctx, act); err != nil {
-		return ctrl.Result{}, err
+	if err := r.writeStatus(ctx, act); err != nil {
+		return retryLater(ctx, err)
 	}
 	if res.Terminal {
 		metrics.ObserveAction(string(act.Spec.Type), string(res.Phase))
@@ -700,16 +698,39 @@ func dumpApplied(act *portagev1alpha1.Action, key string) bool {
 }
 
 func (r *ActionReconciler) rememberDumpApplied(ctx context.Context, act *portagev1alpha1.Action, key string) error {
-	if act.Annotations == nil {
-		act.Annotations = map[string]string{}
-	}
-	cur := act.Annotations[dumpAppliedAnnotation]
-	if cur == "" {
-		act.Annotations[dumpAppliedAnnotation] = key
-	} else {
-		act.Annotations[dumpAppliedAnnotation] = cur + "\n" + key
-	}
-	return r.Update(ctx, act)
+	objKey := client.ObjectKeyFromObject(act)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &portagev1alpha1.Action{}
+		if err := r.Get(ctx, objKey, latest); err != nil {
+			return err
+		}
+		if dumpApplied(latest, key) {
+			act.SetResourceVersion(latest.GetResourceVersion())
+			if act.Annotations == nil {
+				act.Annotations = map[string]string{}
+			}
+			act.Annotations[dumpAppliedAnnotation] = latest.Annotations[dumpAppliedAnnotation]
+			return nil
+		}
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		cur := latest.Annotations[dumpAppliedAnnotation]
+		if cur == "" {
+			latest.Annotations[dumpAppliedAnnotation] = key
+		} else {
+			latest.Annotations[dumpAppliedAnnotation] = cur + "\n" + key
+		}
+		if err := r.Update(ctx, latest); err != nil {
+			return err
+		}
+		act.SetResourceVersion(latest.GetResourceVersion())
+		if act.Annotations == nil {
+			act.Annotations = map[string]string{}
+		}
+		act.Annotations[dumpAppliedAnnotation] = latest.Annotations[dumpAppliedAnnotation]
+		return nil
+	})
 }
 
 func (r *ActionReconciler) pruneVolSync(ctx context.Context, pol *portagev1alpha1.Policy, ep clusters.Pair, inv classify.Inventory) {
@@ -1041,24 +1062,44 @@ func rehydrateOpts(pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPai
 }
 
 func (r *ActionReconciler) writePolicyArtifacts(ctx context.Context, pol *portagev1alpha1.Policy, inv classify.Inventory, arts []portagev1alpha1.ArtifactHealth) error {
-	latest := pol.DeepCopy()
-	if err := r.Get(ctx, client.ObjectKeyFromObject(pol), latest); err != nil {
-		return err
-	}
-	latest.Status.Artifacts = arts
-	ok, missing := backup.Healthy(inv, arts)
-	latest.Status.BackupHealthy = ok
-	metrics.ObservePolicy(latest.Name, latest.Namespace, ok)
-	if !ok {
-		latest.Status.Phase = portagev1alpha1.PolicyUnhealthy
-		if len(missing) > 0 {
-			latest.Status.Message = "backup not useful: " + missing[0]
+	key := client.ObjectKeyFromObject(pol)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &portagev1alpha1.Policy{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
 		}
-	} else if latest.Status.Phase == portagev1alpha1.PolicyUnhealthy {
-		latest.Status.Phase = portagev1alpha1.PolicyHealthy
-		latest.Status.Message = "all stateful artifacts useful"
-	}
-	return r.Status().Update(ctx, latest)
+		latest.Status.Artifacts = arts
+		ok, missing := backup.Healthy(inv, arts)
+		latest.Status.BackupHealthy = ok
+		metrics.ObservePolicy(latest.Name, latest.Namespace, ok)
+		if !ok {
+			latest.Status.Phase = portagev1alpha1.PolicyUnhealthy
+			if len(missing) > 0 {
+				latest.Status.Message = "backup not useful: " + missing[0]
+			}
+		} else if latest.Status.Phase == portagev1alpha1.PolicyUnhealthy {
+			latest.Status.Phase = portagev1alpha1.PolicyHealthy
+			latest.Status.Message = "all stateful artifacts useful"
+		}
+		return r.Status().Update(ctx, latest)
+	})
+}
+
+func (r *ActionReconciler) writeStatus(ctx context.Context, act *portagev1alpha1.Action) error {
+	desired := act.Status.DeepCopy()
+	key := client.ObjectKeyFromObject(act)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &portagev1alpha1.Action{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		latest.Status = *desired
+		if err := r.Status().Update(ctx, latest); err != nil {
+			return err
+		}
+		act.SetResourceVersion(latest.GetResourceVersion())
+		return nil
+	})
 }
 
 func (r *ActionReconciler) fail(ctx context.Context, act *portagev1alpha1.Action, msg string) (ctrl.Result, error) {
@@ -1066,8 +1107,8 @@ func (r *ActionReconciler) fail(ctx context.Context, act *portagev1alpha1.Action
 	act.Status.Message = msg
 	t := metav1.NewTime(r.now())
 	act.Status.CompletionTime = &t
-	if err := r.Status().Update(ctx, act); err != nil {
-		return ctrl.Result{}, err
+	if err := r.writeStatus(ctx, act); err != nil {
+		return retryLater(ctx, err)
 	}
 	return ctrl.Result{}, nil
 }

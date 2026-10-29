@@ -57,7 +57,11 @@ func ensureNamespace(ctx context.Context, kube kubernetes.Interface, ns string, 
 		if labels != nil {
 			tenant = labels[clusterobjects.TenantLabel]
 		}
-		return clusterobjects.AnnotateNamespaceError(err, ns, tenant)
+		var caller clusterobjects.Caller
+		if tenant != "" {
+			caller = clusterobjects.CallerFromKube(ctx, kube)
+		}
+		return clusterobjects.AnnotateNamespaceError(err, ns, tenant, caller)
 	}
 	return nil
 }

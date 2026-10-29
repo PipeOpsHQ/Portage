@@ -87,18 +87,33 @@ Dest Update retries 409 Conflict.
 **Capsule** (0.14 and later) owns a namespace only when the create call is
 authenticated as a registered owner of that Tenant. The
 `capsule.clastix.io/tenant` label is not enough, and adding it later to a
-namespace that already exists is rejected. On the destination, add the
-Portage ServiceAccount to `Tenant.spec.owners` (`kind: ServiceAccount`,
-`name: system:serviceaccount:<portage-namespace>:<portage-sa>`) before
-Replicate creates the namespace. Tenants are cluster-scoped and are copied
-ahead of Namespaces. If a previous run already created the namespace without
-that ownerReference, delete it (this also deletes PVCs replicated into it)
-and let the next reconcile create it as the owner. The Action status says
-this when admission rejects the namespace; it does not keep applying a
-patch Capsule will never accept. Replicate still does not create
-Deployments, StatefulSets, or DaemonSets — those stay on Restore / GitOps.
-A missing stateless Deployment on a live Replicate is that check, not a
-failed namespace sync.
+namespace that already exists is rejected. Add the subject the destination
+API server reports for the Portage client to that Tenant's `spec.owners`
+(`kubectl auth whoami` with the same credentials). The Action error names
+the subject `SelfSubjectReview` returned.
+
+When the destination is this cluster the subject is `kind: ServiceAccount`,
+`name: system:serviceaccount:<portage-namespace>:<portage-sa>`. When
+`destination.azure.credentialsSecret` is set, Portage presents an Entra
+token and the username is the service principal object ID (the token `oid`
+claim), `kind: User`. The application `clientID` is a different claim. The
+kubeconfig user entry is often named `clusterUser`. That string is the API
+username only when the user kubeconfig contains a client certificate
+(AKS local accounts). The same hint is used when VolSync creates the
+destination namespace.
+
+Tenants are cluster-scoped and are copied ahead of Namespaces. Sync unions
+`spec.owners` by kind and name, so an owner that exists only on the
+destination survives the next pass. An owner the source drops stays if the
+destination still lists it. Other destination-only Tenant fields are still
+replaced by the source object. Add `capsule.clastix.io/Tenant` to
+`clusterObjects.excludeGVKs` to stop mirroring the Tenant. If a previous
+run already created the namespace without that ownerReference, delete it
+(this also deletes PVCs replicated into it) and let the next reconcile
+create it as the owner. Replicate still does not create Deployments,
+StatefulSets, or DaemonSets — those stay on Restore / GitOps. A missing
+stateless Deployment on a live Replicate is that check, not a failed
+namespace sync.
 
 STS/Deploy/DS/PVC stay on the workload movers. Unknown CRs stay in the graph.
 `403` list is skipped (not silently dropped from a GVR we could read).

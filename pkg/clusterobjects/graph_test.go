@@ -189,7 +189,7 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 		},
 	}}
 	off := false
-	gvrs, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{IncludeClusterScoped: &off})
+	gvrs, err := Discover(context.Background(), disco, portagev1alpha1.ClusterObjectsSpec{IncludeClusterScoped: &off})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestDiscoverSkipsEphemeralKeepsUnknownCR(t *testing.T) {
 	if got["namespaces"] || got["clusterwidgets"] {
 		t.Fatalf("cluster-scoped except CRDs require IncludeClusterScoped: %v", gvrs)
 	}
-	scoped, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{})
+	scoped, err := Discover(context.Background(), disco, portagev1alpha1.ClusterObjectsSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +535,7 @@ func TestDiscoverExcludeGVKs(t *testing.T) {
 			}},
 		},
 	}}
-	gvrs, err := Discover(disco, portagev1alpha1.ClusterObjectsSpec{
+	gvrs, err := Discover(context.Background(), disco, portagev1alpha1.ClusterObjectsSpec{
 		ExcludeGVKs: []string{"gateway.networking.k8s.io/BackendTLSPolicy"},
 	})
 	if err != nil {
@@ -805,6 +805,11 @@ func TestSyncSurfacesCapsuleAdmissionDenial(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v", err)
 			}
+			// WhoAmI has no username here. The hint must still say what the
+			// two values operators usually guess actually are.
+			if !strings.Contains(err.Error(), "clusterUser") || !strings.Contains(err.Error(), "clientID") {
+				t.Fatalf("fallback hint: %v", err)
+			}
 			if _, getErr := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{}); !apierrors.IsNotFound(getErr) {
 				t.Fatalf("denied create must not leave a namespace, get %v", getErr)
 			}
@@ -832,6 +837,79 @@ func TestSyncFindsTenantOnOlderVersionWhenPreferredIsForbidden(t *testing.T) {
 	}
 	if _, err := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSyncKeepsDestTenantOwners(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	sa := map[string]any{"kind": "ServiceAccount", "name": "system:serviceaccount:tenant-system:pipeops"}
+	destOnly := map[string]any{"kind": "User", "name": "clusterUser"}
+	sourceOnly := map[string]any{"kind": "User", "name": "source-admin"}
+	dest := capsuleTenant("acme")
+	_ = unstructured.SetNestedSlice(dest.Obj.Object, []any{sa, destOnly}, "spec", "owners")
+	if _, err := dst.Resource(tenantGVR()).Create(ctx, dest.Obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	src := capsuleTenant("acme")
+	_ = unstructured.SetNestedSlice(src.Obj.Object, []any{sa, sourceOnly}, "spec", "owners")
+	if err := Sync(ctx, dst, []Item{src}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dst.Resource(tenantGVR()).Get(ctx, "acme", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners, _, _ := unstructured.NestedSlice(got.Object, "spec", "owners")
+	seen := map[string]struct{}{}
+	for _, owner := range owners {
+		if key, ok := ownerIdentity(owner); ok {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, want := range []string{
+		"ServiceAccount\x00system:serviceaccount:tenant-system:pipeops",
+		"User\x00clusterUser",
+		"User\x00source-admin",
+	} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("owners missing %q: %#v", want, owners)
+		}
+	}
+}
+
+func TestSyncNamesEntraCallerOnCapsuleDenial(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dst := dynfake.NewSimpleDynamicClient(runtime.NewScheme())
+	if _, err := dst.Resource(tenantGVR()).Create(ctx, capsuleTenant("acme").Obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	const oid = "11111111-2222-3333-4444-555555555555"
+	dst.PrependReactor("create", "selfsubjectreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "authentication.k8s.io/v1",
+			"kind":       "SelfSubjectReview",
+			"status": map[string]any{
+				"userInfo": map[string]any{"username": oid},
+			},
+		}}, nil
+	})
+	dst.PrependReactor("create", "namespaces", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, "app",
+			fmt.Errorf("admission webhook %q denied the request: namespace has tenant label %q but no Tenant ownerReference", "namespaces.validating.projectcapsule.dev", "acme"))
+	})
+	err := Sync(ctx, dst, []Item{capsuleNamespace("app", "acme")})
+	if err == nil {
+		t.Fatal("expected admission error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "kind: User") || !strings.Contains(msg, oid) || !strings.Contains(msg, "spec.owners") {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(msg, "portage-controller") {
+		t.Fatalf("hub ServiceAccount must not be the named caller: %v", err)
 	}
 }
 

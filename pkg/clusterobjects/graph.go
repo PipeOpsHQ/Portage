@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -129,7 +130,7 @@ func Is(w classify.Workload) bool {
 
 // Capture is Discover + List + Sanitize. This is the live-replication read.
 func Capture(ctx context.Context, d discovery.DiscoveryInterface, dyn dynamic.Interface, spec portagev1alpha1.ClusterObjectsSpec, namespaces []string, opt transform.Options) ([]Item, error) {
-	gvrs, err := Discover(d, spec)
+	gvrs, err := Discover(ctx, d, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +152,43 @@ func includeClusterScoped(spec portagev1alpha1.ClusterObjectsSpec) bool {
 // CRDs are always included (unknown CRs cannot restore without them)
 // unless listed in spec.excludeGVKs. Other cluster-scoped APIs follow
 // includeClusterScoped (default on).
-func Discover(d discovery.DiscoveryInterface, spec portagev1alpha1.ClusterObjectsSpec) ([]Ref, error) {
+//
+// client-go discovery issues requests with context.TODO(). A reconcile
+// deadline would not unblock that call, and the worker would stay inside
+// it until the socket died. The lookup runs beside the reconcile context
+// and is abandoned after two minutes so the Action is retried.
+func Discover(ctx context.Context, d discovery.DiscoveryInterface, spec portagev1alpha1.ClusterObjectsSpec) ([]Ref, error) {
 	if d == nil {
 		return nil, fmt.Errorf("clusterobjects: discovery client required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	type result struct {
+		refs []Ref
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				ch <- result{nil, fmt.Errorf("clusterobjects: discovery panicked: %v", rec)}
+			}
+		}()
+		refs, err := discover(d, spec)
+		ch <- result{refs, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("clusterobjects: discovery: %w", ctx.Err())
+	case got := <-ch:
+		return got.refs, got.err
+	}
+}
+
+func discover(d discovery.DiscoveryInterface, spec portagev1alpha1.ClusterObjectsSpec) ([]Ref, error) {
 	clusterScoped := includeClusterScoped(spec)
 	lists, err := d.ServerPreferredResources()
 	if len(lists) == 0 {

@@ -25,14 +25,18 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
@@ -273,6 +277,61 @@ func TestBackupSucceedsWhenDumpIsUseful(t *testing.T) {
 	}
 	if !updated.Status.BackupHealthy {
 		t.Fatalf("expected BackupHealthy: %+v", updated.Status.Artifacts)
+	}
+}
+
+func TestReconcileRetriesStatusConflict(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec:       portagev1alpha1.PolicySpec{Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}}},
+	}
+	act := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{Name: "bak", Namespace: "ns"},
+		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionBackup, PolicyRef: "p"},
+		Status:     portagev1alpha1.ActionStatus{Phase: portagev1alpha1.ActionPhasePending},
+	}
+	var conflicts int
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Action{}, &portagev1alpha1.Policy{}).
+		WithObjects(pol, act).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					if _, ok := obj.(*portagev1alpha1.Action); ok && conflicts == 0 {
+						conflicts++
+						return apierrors.NewConflict(
+							schema.GroupResource{Group: "portage.io", Resource: "actions"},
+							obj.GetName(),
+							fmt.Errorf("the object has been modified; please apply your changes to the latest version and try again"),
+						)
+					}
+				}
+				return cl.SubResource(subResourceName).Update(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ActionReconciler{
+		Client: c,
+		Scheme: scheme,
+		Kube:   k8sfake.NewSimpleClientset(pgSTS(), pgPod()),
+		Exec:   &kubeexec.Fake{Results: map[string]kubeexec.Result{"ns/pg-0": {Stdout: "11800\n"}}},
+		Now:    func() time.Time { return time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC) },
+	}
+	key := types.NamespacedName{Name: "bak", Namespace: "ns"}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflicts != 1 {
+		t.Fatalf("conflicts=%d", conflicts)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("terminal reconcile requeued after %s", res.RequeueAfter)
+	}
+	got := getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseFailed {
+		t.Fatalf("phase=%s (%s)", got.Status.Phase, got.Status.Message)
 	}
 }
 
