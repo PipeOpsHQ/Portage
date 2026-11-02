@@ -34,7 +34,11 @@ size / `ReadyToUse`.
 
 `Policy.status.backupHealthy` is false until every stateful workload has a
 useful artifact (≥ 64 KiB dump). Portable copies live in the object store
-(`ArtifactID`).
+(`ArtifactID`). `status.phase` stays Unhealthy with `backup not useful: …`
+while that is true, including when `status.replicaLag` already reports
+live-sync healthy (`replica lag=0; dest probed; live-sync`). `replicaLag`
+does not clear the backup gate. Alert on `backupHealthy` and `replicaLag`
+separately.
 
 ## Dual cluster
 

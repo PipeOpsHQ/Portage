@@ -24,6 +24,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +33,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
 	"github.com/PipeOpsHQ/portage/pkg/classify"
@@ -743,6 +746,35 @@ func TestReplicateDropsPairWhenSourcePVCIsGone(t *testing.T) {
 	}
 	if _, err := dstDyn.Resource(dstGVR).Namespace("ns").Get(context.Background(), rd.GetName(), metav1.GetOptions{}); err == nil {
 		t.Fatal("ReplicationDestination must be deleted when the source PVC is gone")
+	}
+}
+
+func TestPruneIgnoresMissingVolSyncAPI(t *testing.T) {
+	t.Parallel()
+	listKinds := map[schema.GroupVersionResource]string{srcGVR: "ReplicationSourceList"}
+	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+	dyn.PrependReactor("list", "replicationsources", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, &apierrors.StatusError{ErrStatus: metav1.Status{
+			Status:  metav1.StatusFailure,
+			Code:    404,
+			Reason:  metav1.StatusReasonNotFound,
+			Message: "the server could not find the requested resource",
+		}}
+	})
+	m := Mover{Dynamic: dyn}
+	if err := m.Prune(context.Background(), "noon-app", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	nomatch := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+	nomatch.PrependReactor("list", "replicationsources", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, &meta.NoKindMatchError{
+			GroupKind:        schema.GroupKind{Group: "volsync.backube", Kind: "ReplicationSource"},
+			SearchedVersions: []string{"v1alpha1"},
+		}
+	})
+	if err := (Mover{Dynamic: nomatch}).Prune(context.Background(), "noon-app", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

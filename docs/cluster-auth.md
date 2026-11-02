@@ -229,13 +229,32 @@ administrator. The validating webhook then requires the ownerReference
 whenever `capsule.clastix.io/tenant` is set. A subject listed only on
 `Tenant.spec.owners` owns that Tenant, and is not a Capsule user.
 
-Capsule users are `CapsuleConfiguration.status.users`. The configuration
-controller copies `spec.users` (and a `TenantOwner` whose `spec.aggregate`
-is left at the default `true`) into that status. The default entry is the
-group `projectcapsule.dev`. An Entra service principal token does not carry
-that group. `kubectl auth whoami` on the destination credentials, or the
-username in the Action error, is the subject to register. Register it in
-both places:
+These are two registrations, and both have to be true before Capsule will
+admit the namespace.
+
+- Capsule users are `CapsuleConfiguration.status.users`. The configuration
+  controller copies `spec.users`, and a `TenantOwner` whose `spec.aggregate`
+  is left at the default `true`, into that status.
+- Admission reads `Tenant.status.owners`. The Tenant controller copies that
+  from `Tenant.spec.owners`.
+
+A `TenantOwner` does not write `Tenant.spec.owners` or `Tenant.status.owners`.
+The label `projectcapsule.dev/tenant` does not either. `spec.aggregate: true`
+only fills `status.users`.
+
+The default Capsule user is the group `projectcapsule.dev`. An Entra service
+principal token does not carry that group. `kubectl auth whoami` on the
+destination credentials, or the username in the Action error, is the subject.
+
+Before it creates the namespace, Portage appends that caller to destination
+`Tenant.spec.owners` with `clusterRoles: ["admin"]`. When `status.users` does
+not already list the caller, Portage also creates a `TenantOwner` named
+`portage-<tenant>` with the label above and `spec.aggregate` left unset.
+Namespace create waits until `status.owners` lists the subject. An owner that
+is already on the destination Tenant is left in place. A namespace that
+already exists without a Tenant ownerReference is not modified.
+
+The same two objects, registered by hand:
 
 ```yaml
 apiVersion: capsule.clastix.io/v1beta2
@@ -258,8 +277,8 @@ spec:
       clusterRoles: ["admin"]
 ```
 
-A single `TenantOwner` does both jobs. `spec.aggregate` defaults to true,
-which puts the subject in `status.users`, and the label matches the Tenant:
+`TenantOwner` is only the Capsule-user half. `spec.aggregate` defaults to
+true, which puts the subject in `CapsuleConfiguration.status.users`:
 
 ```yaml
 apiVersion: capsule.clastix.io/v1beta2
@@ -273,6 +292,10 @@ spec:
   name: 11111111-2222-3333-4444-555555555555
   clusterRoles: ["admin"]
 ```
+
+That object does not add the subject to `Tenant.spec.owners`. Admission keeps
+failing until `spec.owners` lists them and the Tenant controller has copied
+that into `status.owners`.
 
 In-cluster destination (the hub ServiceAccount is the caller), same two
 registrations, `kind: ServiceAccount`:

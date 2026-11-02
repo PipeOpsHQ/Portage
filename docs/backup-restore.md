@@ -48,6 +48,16 @@ kubectl -n tenant-a get action backup-1 -w
 5. Heal Pending topology/SC.
 6. Wait Ready + `pg_isready` (or class probe). Empty dest Postgres that is Ready
    is **not** a restore until the dump lands. **Never Succeeded without that.**
+   A stateless Deployment or DaemonSet is Ready when the destination object
+   has at least one Ready replica (`status.readyReplicas` or
+   `status.numberReady`). That read runs on every reconcile.
+
+A Restore that fails while applying on dest (namespace not created yet,
+admission webhook, conflict) stays `Rehydrating` and retries. It does not
+set `completionTime`. `Failed` is for a permanent preflight (nothing
+restorable), a missing Policy, or an unsupported type. A Restore already
+sitting at `Failed` with a dest-apply message is picked up again. Delete and
+recreate is not required.
 
 `Policy.spec.restore.auto: true` creates one `restore-auto-<policy>` Action when
 a covered PVC is gone **and** backups are useful. Bound PVCs are not overwritten.
@@ -90,14 +100,15 @@ or a Capsule administrator, and it stamps the Tenant `ownerReference` only
 when that subject is also an owner of the labeled Tenant. The validating
 webhook then rejects a tenant label with no ownerReference. Capsule users
 live on `CapsuleConfiguration.status.users` (from `spec.users`, or from a
-`TenantOwner` with `spec.aggregate` left at its default). `Tenant.spec.owners`
-is a different list. The default Capsule user group is `projectcapsule.dev`,
-which an Entra service principal token does not carry. Add the subject the
-destination API server reports (`kubectl auth whoami` with the same
-credentials, or the `SelfSubjectReview` username in the Action error) to
-both `Tenant.spec.owners` and `CapsuleConfiguration.spec.users`. The label
-alone is not enough, and adding it later to a namespace that already exists
-is rejected.
+`TenantOwner` with `spec.aggregate` left at its default). That flag does
+not write `Tenant.spec.owners`. Admission reads `Tenant.status.owners`,
+which the Tenant controller copies from `spec.owners`. The default Capsule
+user group is `projectcapsule.dev`, which an Entra service principal token
+does not carry. Portage appends the destination caller (`SelfSubjectReview`)
+to `Tenant.spec.owners` and creates the `TenantOwner` when `status.users`
+does not already list them, then waits until `status.owners` does. Adding
+the subject by hand still means both lists. The label alone is not enough,
+and adding it later to a namespace that already exists is rejected.
 
 When the destination is this cluster the subject is `kind: ServiceAccount`,
 `name: system:serviceaccount:<portage-namespace>:<portage-sa>`. When

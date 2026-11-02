@@ -129,8 +129,9 @@ var tenantGVRs = []schema.GroupVersionResource{
 func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.ResourceInterface, obj *unstructured.Unstructured) error {
 	name := obj.GetName()
 	tenant := CapsuleTenant(obj)
-	// SelfSubjectReview only on the error path. A successful create does
-	// not need to know which subject the apiserver saw.
+	// SelfSubjectReview runs before a Capsule namespace create so this
+	// caller can be registered on both lists admission checks. An empty
+	// username leaves that to the operator. The error path reuses it.
 	var caller Caller
 	var lookedUp bool
 	subject := func() Caller {
@@ -149,6 +150,17 @@ func syncNamespace(ctx context.Context, dyn dynamic.Interface, r dynamic.Resourc
 		}
 		if !ok {
 			return fmt.Errorf("sync Namespace/%s: %s", name, MissingTenant(name, tenant))
+		}
+		if caller := subject(); caller.Name != "" {
+			if err := ensureCapsuleCaller(ctx, dyn, tenant, caller); err != nil {
+				return fmt.Errorf("sync Namespace/%s: %w", name, err)
+			}
+			// status.owners lags the spec write until Capsule's Tenant
+			// controller reconciles. Creating now is denied, and a denied
+			// create must not be treated as a finished namespace.
+			if access := observeCapsuleCaller(ctx, dyn, tenant, caller); !access.ownerInStatus {
+				return fmt.Errorf("sync Namespace/%s: %s", name, ownerNotYetAdmitted(tenant, caller))
+			}
 		}
 	}
 	_, err := r.Create(ctx, obj, metav1.CreateOptions{})

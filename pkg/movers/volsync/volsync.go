@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -272,6 +273,12 @@ func (m Mover) Prune(ctx context.Context, ns string, keep map[string]struct{}) e
 	}
 	list, err := m.Dynamic.Resource(srcGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
+		// No VolSync API on this cluster means there is no pair to prune.
+		// The apiserver reports that as NotFound ("the server could not find
+		// the requested resource"); a client without the CRD reports no match.
+		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil
+		}
 		return err
 	}
 	for i := range list.Items {

@@ -682,7 +682,16 @@ func TestSyncCapsuleTenantBeforeNamespace(t *testing.T) {
 	if err := Sync(context.Background(), dst, items); err != nil {
 		t.Fatal(err)
 	}
-	if len(order) < 2 || order[0] != "tenants" || order[1] != "namespaces" {
+	tenantAt, nsAt := -1, -1
+	for i, resource := range order {
+		if resource == "tenants" && tenantAt < 0 {
+			tenantAt = i
+		}
+		if resource == "namespaces" && nsAt < 0 {
+			nsAt = i
+		}
+	}
+	if tenantAt < 0 || nsAt < 0 || tenantAt > nsAt {
 		t.Fatalf("apply order %v", order)
 	}
 	got, err := dst.Resource(nsGVR()).Get(context.Background(), "app", metav1.GetOptions{})
@@ -896,20 +905,54 @@ func TestSyncNamesEntraCallerOnCapsuleDenial(t *testing.T) {
 			},
 		}}, nil
 	})
-	dst.PrependReactor("create", "namespaces", func(action clienttesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, "app",
-			fmt.Errorf("admission webhook %q denied the request: namespace has tenant label %q but no Tenant ownerReference", "namespaces.validating.projectcapsule.dev", "acme"))
-	})
 	err := Sync(ctx, dst, []Item{capsuleNamespace("app", "acme")})
-	if err == nil {
-		t.Fatal("expected admission error")
+	if err == nil || !strings.Contains(err.Error(), "does not yet") {
+		t.Fatalf("status.owners lag must retry, got %v", err)
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "kind: User") || !strings.Contains(msg, oid) || !strings.Contains(msg, "spec.owners") || !strings.Contains(msg, "spec.users") {
 		t.Fatalf("got %v", err)
 	}
-	if strings.Contains(msg, "portage-controller") {
-		t.Fatalf("hub ServiceAccount must not be the named caller: %v", err)
+	if strings.Contains(msg, "portage-controller") || strings.Contains(msg, "registers both") {
+		t.Fatalf("hub ServiceAccount or TenantOwner-does-both claim: %v", err)
+	}
+	if _, getErr := dst.Resource(nsGVR()).Get(ctx, "app", metav1.GetOptions{}); !apierrors.IsNotFound(getErr) {
+		t.Fatalf("namespace must wait for status.owners, get %v", getErr)
+	}
+	tenant, err := dst.Resource(tenantGVR()).Get(ctx, "acme", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners, _, _ := unstructured.NestedSlice(tenant.Object, "spec", "owners")
+	if !subjectListed(owners, Caller{Kind: "User", Name: oid}) {
+		t.Fatalf("spec.owners was not patched: %#v", owners)
+	}
+	var roles []string
+	for _, owner := range owners {
+		m, _ := owner.(map[string]any)
+		name, _, _ := unstructured.NestedString(m, "name")
+		if name != oid {
+			continue
+		}
+		raw, _, _ := unstructured.NestedSlice(m, "clusterRoles")
+		for _, role := range raw {
+			if s, ok := role.(string); ok {
+				roles = append(roles, s)
+			}
+		}
+	}
+	if len(roles) != 1 || roles[0] != "admin" {
+		t.Fatalf("clusterRoles=%v", roles)
+	}
+	to, err := dst.Resource(ownerGVR()).Get(ctx, "portage-acme", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if to.GetLabels()[tenantOwnerLabel] != "acme" || to.GetLabels()[managedByLabel] != managedByPortage {
+		t.Fatalf("labels %#v", to.GetLabels())
+	}
+	if !tenantOwnerSubject(to, Caller{Kind: "User", Name: oid}) {
+		t.Fatalf("TenantOwner spec %#v", to.Object["spec"])
 	}
 }
 
@@ -978,6 +1021,20 @@ func TestSyncExplainsTenantOwnerWhoIsNotACapsuleUser(t *testing.T) {
 	if strings.Contains(msg, "portage-controller") {
 		t.Fatalf("hub ServiceAccount named: %s", msg)
 	}
+	to, getErr := dst.Resource(ownerGVR()).Get(ctx, "portage-elegant-network", metav1.GetOptions{})
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if !tenantOwnerSubject(to, Caller{Kind: "User", Name: oid}) {
+		t.Fatalf("TenantOwner spec %#v", to.Object["spec"])
+	}
+	if to.GetLabels()[tenantOwnerLabel] != "elegant-network" {
+		t.Fatalf("labels %#v", to.GetLabels())
+	}
+}
+
+func ownerGVR() schema.GroupVersionResource {
+	return tenantOwnerGVRs[0]
 }
 
 func nsGVR() schema.GroupVersionResource {

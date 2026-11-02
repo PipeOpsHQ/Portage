@@ -73,6 +73,25 @@ func TestCapsuleGapWithoutAReadStillNamesBothObjects(t *testing.T) {
 	}
 }
 
+func TestCapsuleGapDoesNotClaimTenantOwnerWritesSpecOwners(t *testing.T) {
+	t.Parallel()
+	const oid = "396e2032-ba4e-4ebf-ae71-1bbc85666502"
+	caller := Caller{Kind: "User", Name: oid, Groups: []string{"system:authenticated"}}
+	msg := capsuleGap("noon-titan", caller, capsuleAccess{})
+	if strings.Contains(msg, "registers both") {
+		t.Fatalf("TenantOwner must not be described as writing both lists: %s", msg)
+	}
+	for _, want := range []string{"spec.owners", "status.users", "does not write Tenant spec.owners", oid} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in %s", want, msg)
+		}
+	}
+	alreadyUser := capsuleGap("noon-titan", caller, capsuleAccess{read: true, configRead: true, userInStatus: true})
+	if !strings.Contains(alreadyUser, "does not write Tenant spec.owners") || !strings.Contains(alreadyUser, "spec.owners") {
+		t.Fatalf("user without owner: %s", alreadyUser)
+	}
+}
+
 func TestSubjectListedMatchesUserAndGroup(t *testing.T) {
 	t.Parallel()
 	owners := []any{

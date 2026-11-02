@@ -192,8 +192,8 @@ func groupContains(groups []string, want string) bool {
 
 func capsuleGap(tenant string, caller Caller, access capsuleAccess) string {
 	register := fmt.Sprintf(
-		"Register it on Tenant %q spec.owners (kind: %s, name: %q) and on CapsuleConfiguration spec.users with the same kind and name. Capsule's namespace mutating webhook stamps a Tenant ownerReference only when the caller is a Capsule user or a Capsule administrator. Tenant spec.owners does not grant that, so the validating webhook then rejects the tenant label with no ownerReference. The default Capsule user group %s is not added to an Entra service principal token. A TenantOwner labeled %s=%s with this subject registers both, because spec.aggregate defaults to true",
-		tenant, caller.Kind, caller.Name, defaultCapsuleUserGroup, "projectcapsule.dev/tenant", tenant,
+		"Register it on Tenant %q spec.owners (kind: %s, name: %q, clusterRoles: [admin]) and as a Capsule user. Capsule users are CapsuleConfiguration status.users, copied from spec.users and from a TenantOwner whose spec.aggregate is left at the default true. Tenant spec.owners does not make the caller a Capsule user, and a TenantOwner does not write Tenant spec.owners. Admission reads Tenant status.owners, which the Tenant controller copies from spec.owners. Both lists have to contain this subject. The default Capsule user group %s is not added to an Entra service principal token",
+		tenant, caller.Kind, caller.Name, defaultCapsuleUserGroup,
 	)
 	if !access.read {
 		return register
@@ -227,7 +227,7 @@ func capsuleGap(tenant string, caller Caller, access capsuleAccess) string {
 		)
 	case access.userInStatus && !access.ownerInStatus:
 		return fmt.Sprintf(
-			"CapsuleConfiguration status.users already lists %s %q. Tenant %q spec.owners and status.owners do not. Add that subject to Tenant %q spec.owners (kind: %s, name: %q). The mutating webhook assigns the labeled tenant only when status.owners matches the caller",
+			"CapsuleConfiguration status.users already lists %s %q. Tenant %q spec.owners and status.owners do not. A TenantOwner only adds a Capsule user. It does not write Tenant spec.owners. Add that subject to Tenant %q spec.owners (kind: %s, name: %q). The mutating webhook assigns the labeled tenant only when status.owners matches the caller",
 			caller.Kind, caller.Name, tenant, tenant, caller.Kind, caller.Name,
 		)
 	case access.ownerInSpec && !access.ownerInStatus:
