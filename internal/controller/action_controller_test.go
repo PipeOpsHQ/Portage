@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -152,6 +153,164 @@ func TestRestoreFailsPreflightWithoutUsefulBackup(t *testing.T) {
 	if got.Status.Phase != portagev1alpha1.ActionPhaseFailed {
 		t.Fatalf("phase=%s want Failed (%s)", got.Status.Phase, got.Status.Message)
 	}
+}
+
+func TestRestoreStatelessDeploymentReadySucceeds(t *testing.T) {
+	t.Parallel()
+	r, key := newStatelessRestore(t, 1, nil)
+	drain(t, r, key)
+	got := getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseSucceeded {
+		t.Fatalf("phase=%s message=%s", got.Status.Phase, got.Status.Message)
+	}
+	if !statelessReady(got) {
+		t.Fatalf("workload status %+v", got.Status.Workloads)
+	}
+}
+
+func TestRestoreStatelessDeploymentNotReadyStaysWaiting(t *testing.T) {
+	t.Parallel()
+	r, key := newStatelessRestore(t, 0, nil)
+	drain(t, r, key)
+	got := getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseWaitingReady {
+		t.Fatalf("phase=%s message=%s", got.Status.Phase, got.Status.Message)
+	}
+	if !strings.Contains(got.Status.Message, "is not Ready") {
+		t.Fatalf("message=%s", got.Status.Message)
+	}
+}
+
+func TestRestoreRetriesDestApplyWhenNamespaceMissing(t *testing.T) {
+	t.Parallel()
+	r, key := newStatelessRestore(t, 1, func(kube *k8sfake.Clientset) {
+		kube.PrependReactor("create", "deployments", func(action clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "ns")
+		})
+	})
+	drain(t, r, key)
+	got := getAction(t, r, key)
+	if got.Status.Phase == portagev1alpha1.ActionPhaseFailed {
+		t.Fatalf("dest apply must stay retryable, phase=%s message=%s", got.Status.Phase, got.Status.Message)
+	}
+	if got.Status.Phase != portagev1alpha1.ActionPhaseRehydrating || got.Status.CompletionTime != nil {
+		t.Fatalf("phase=%s completion=%v message=%s", got.Status.Phase, got.Status.CompletionTime, got.Status.Message)
+	}
+	if !strings.Contains(got.Status.Message, "dest apply:") || !strings.Contains(got.Status.Message, "not found") {
+		t.Fatalf("message=%s", got.Status.Message)
+	}
+}
+
+func TestRestoreResumesFailedDestApply(t *testing.T) {
+	t.Parallel()
+	r, key := newStatelessRestore(t, 1, func(kube *k8sfake.Clientset) {
+		kube.PrependReactor("create", "deployments", func(action clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "ns")
+		})
+	})
+	got := getAction(t, r, key)
+	done := metav1.NewTime(time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC))
+	got.Status.Phase = portagev1alpha1.ActionPhaseFailed
+	got.Status.Message = `dest apply: apply PersistentVolumeClaim/postgres-data: namespaces "ns" not found; dest=pks-sa1`
+	got.Status.CompletionTime = &done
+	if err := r.Status().Update(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("resumed restore did not requeue")
+	}
+	got = getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseRehydrating || got.Status.CompletionTime != nil {
+		t.Fatalf("phase=%s completion=%v message=%s", got.Status.Phase, got.Status.CompletionTime, got.Status.Message)
+	}
+	if !restoreRetryable(got.Status.Message) {
+		t.Fatalf("message=%s", got.Status.Message)
+	}
+}
+
+func TestRestoreLeavesPermanentPreflightFailed(t *testing.T) {
+	t.Parallel()
+	r, key := newRestoreHarness(t, &kubeexec.Fake{}, false)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	got := getAction(t, r, key)
+	done := metav1.NewTime(time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC))
+	got.Status.Phase = portagev1alpha1.ActionPhaseFailed
+	got.Status.Message = "preflight: no restorable workloads"
+	got.Status.CompletionTime = &done
+	if err := r.Status().Update(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("permanent failure requeued after %s", res.RequeueAfter)
+	}
+	got = getAction(t, r, key)
+	if got.Status.Phase != portagev1alpha1.ActionPhaseFailed || got.Status.Message != "preflight: no restorable workloads" {
+		t.Fatalf("phase=%s message=%s", got.Status.Phase, got.Status.Message)
+	}
+	if got.Status.CompletionTime == nil || !got.Status.CompletionTime.Equal(&done) {
+		t.Fatalf("completionTime=%v", got.Status.CompletionTime)
+	}
+}
+
+func newStatelessRestore(t *testing.T, ready int32, setup func(*k8sfake.Clientset)) (*ActionReconciler, types.NamespacedName) {
+	t.Helper()
+	scheme := newScheme(t)
+	pol := &portagev1alpha1.Policy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec:       portagev1alpha1.PolicySpec{Selector: portagev1alpha1.TargetSelector{Namespaces: []string{"ns"}}},
+	}
+	act := &portagev1alpha1.Action{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: "ns"},
+		Spec:       portagev1alpha1.ActionSpec{Type: portagev1alpha1.ActionRestore, PolicyRef: "p"},
+	}
+	c := ctrlfake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&portagev1alpha1.Action{}, &portagev1alpha1.Policy{}).
+		WithObjects(pol, act).Build()
+	kube := k8sfake.NewSimpleClientset(statelessDep("web", ready))
+	if setup != nil {
+		setup(kube)
+	}
+	r := &ActionReconciler{
+		Client: c,
+		Scheme: scheme,
+		Kube:   kube,
+		Now:    func() time.Time { return time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC) },
+	}
+	return r, types.NamespacedName{Name: "restore", Namespace: "ns"}
+}
+
+func statelessDep(name string, ready int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1"}}},
+			},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: ready, Replicas: 1, AvailableReplicas: ready},
+	}
+}
+
+func statelessReady(act *portagev1alpha1.Action) bool {
+	for _, w := range act.Status.Workloads {
+		if w.Key == "ns/Deployment/web" && w.Ready && w.Class == portagev1alpha1.ClassStateless {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBackupFailsWhenLiveSizeIsCertsOnly(t *testing.T) {

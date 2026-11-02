@@ -164,8 +164,18 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if act.Spec.Type != portagev1alpha1.ActionReplicate || act.Spec.DryRun {
 			return ctrl.Result{}, nil
 		}
-	case portagev1alpha1.ActionPhaseFailed, portagev1alpha1.ActionPhaseRolledBack:
+	case portagev1alpha1.ActionPhaseRolledBack:
 		return ctrl.Result{}, nil
+	case portagev1alpha1.ActionPhaseFailed:
+		// A dest apply failure used to set Failed and stop. The namespace
+		// (or admission) can appear later. Resume only that class of Restore.
+		// Preflight, a missing Policy, and an unsupported type stay terminal.
+		if act.Spec.Type != portagev1alpha1.ActionRestore || !restoreRetryable(act.Status.Message) {
+			return ctrl.Result{}, nil
+		}
+		logger.Info("resuming failed restore", "message", act.Status.Message)
+		act.Status.Phase = portagev1alpha1.ActionPhaseRehydrating
+		act.Status.CompletionTime = nil
 	}
 
 	// Every pass logs before any call that can block. A worker that holds
@@ -423,7 +433,19 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 			rendered = append(rendered, out...)
 		}
 		if err := apply.Typed(ctx, ep.Dest.Kube, rendered); err != nil {
-			return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: "dest apply: " + err.Error(), Terminal: true}, nil
+			// Missing namespace, admission, and conflicts clear once the
+			// Replicate path (or the operator) removes the blocker. Failed
+			// would freeze the Action with completionTime set.
+			msg := "dest apply: " + err.Error()
+			if restoreRetryable(msg) {
+				return restore.Result{
+					Phase:        portagev1alpha1.ActionPhaseRehydrating,
+					Message:      msg,
+					Workloads:    act.Status.Workloads,
+					RequeueAfter: 5 * time.Second,
+				}, nil
+			}
+			return restore.Result{Phase: portagev1alpha1.ActionPhaseFailed, Message: msg, Terminal: true}, nil
 		}
 	}
 	for _, w := range inv.Workloads {
@@ -434,6 +456,26 @@ func (r *ActionReconciler) runRestore(ctx context.Context, act *portagev1alpha1.
 		if w.Class == portagev1alpha1.ClassStateless {
 			facts.Useful[w.Key()] = true
 			facts.Rehydrated[w.Key()] = true
+			// The manifest is on dest. Ready is a separate read of that
+			// object. Leaving it unset kept WaitingReady after the
+			// Deployment was already Available.
+			if ep.Dest.Kube == nil {
+				facts.Ready[w.Key()] = false
+				facts.UsefulMessage[w.Key()] = "dest client required"
+				continue
+			}
+			ready, err := workloads.Ready(ctx, ep.Dest.Kube, w)
+			if err != nil {
+				facts.Ready[w.Key()] = false
+				facts.UsefulMessage[w.Key()] = err.Error()
+				continue
+			}
+			facts.Ready[w.Key()] = ready
+			if ready {
+				facts.UsefulMessage[w.Key()] = "dest Ready"
+			} else {
+				facts.UsefulMessage[w.Key()] = "dest not Ready"
+			}
 			continue
 		}
 		if !facts.Useful[w.Key()] {
@@ -1100,6 +1142,37 @@ func (r *ActionReconciler) writeStatus(ctx context.Context, act *portagev1alpha1
 		act.SetResourceVersion(latest.GetResourceVersion())
 		return nil
 	})
+}
+
+// restoreRetryable is a dest-side failure that can clear without a new
+// Action. The stored message includes "; dest=<name>". Permanent preflight
+// and spec errors stay terminal even when they contain "not found".
+func restoreRetryable(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "preflight:"):
+		return false
+	case strings.Contains(lower, "no restorable"):
+		return false
+	case strings.Contains(lower, "no workloads"):
+		return false
+	case strings.Contains(lower, "unsupported action"):
+		return false
+	case strings.Contains(lower, "spec.policyref"):
+		return false
+	case strings.Contains(lower, "policy:"):
+		return false
+	case strings.Contains(lower, "dry-run"):
+		return false
+	}
+	return strings.Contains(msg, "dest apply:") ||
+		strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "non-owned tenant") ||
+		strings.Contains(lower, "admission webhook") ||
+		strings.Contains(lower, "the object has been modified")
 }
 
 func (r *ActionReconciler) fail(ctx context.Context, act *portagev1alpha1.Action, msg string) (ctrl.Result, error) {

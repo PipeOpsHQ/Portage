@@ -11,9 +11,36 @@
 
 - Kind e2e documents SeaweedFS `weed mini` as the CI object store
   (`S3_IMAGE`, bucket, and keys). Cutover no longer points at `E2E_FULL`.
+- Capsule registration no longer says one `TenantOwner` updates both
+  Capsule users and Tenant owners. `spec.aggregate` only fills
+  `CapsuleConfiguration.status.users`. Admission reads
+  `Tenant.status.owners`. Policy phase `backup not useful` is documented
+  as independent of a healthy `replicaLag`.
 
 ### Fixed
 
+- Replicate prune treats a missing VolSync API as nothing to delete. A
+  cluster without the ReplicationSource CRD used to log that 404 on every
+  reconcile (`the server could not find the requested resource`).
+- Before a Capsule-labeled namespace create, Portage appends the
+  destination caller to `Tenant.spec.owners` (`clusterRoles: ["admin"]`)
+  and, when `CapsuleConfiguration.status.users` does not already list
+  that subject, creates a `TenantOwner` labeled
+  `projectcapsule.dev/tenant`. `spec.aggregate` is left at its default,
+  which only registers a Capsule user. It does not write
+  `Tenant.spec.owners`. Namespace create waits until `status.owners`
+  lists the subject, which is the list Capsule admission reads. A
+  namespace that already exists without a Tenant ownerReference is still
+  not adopted. An empty `SelfSubjectReview` username is still only a hint.
+- A Restore that fails while applying on the destination (namespace
+  missing, admission, conflict) stays `Rehydrating` and retries. It does
+  not set `completionTime`. A Restore already `Failed` with one of those
+  messages is resumed. Preflight with nothing restorable, a missing
+  Policy, an unsupported type, and Cutover rollback stay terminal.
+- Restore reads destination Deployment, StatefulSet, and DaemonSet
+  readiness on every reconcile, including a stateless workload.
+  `readyReplicas >= 1` (DaemonSet `numberReady`) marks it Ready. A
+  Deployment that is already Available no longer sits in `WaitingReady`.
 - Capsule namespace admission tells the operator when the SelfSubjectReview
   subject is already a Tenant owner and is still not a Capsule user. Capsule
   0.14 stamps the Tenant ownerReference only from the namespace mutating
