@@ -50,8 +50,9 @@
   is paused and its mover Job is deleted. Direct copyMethod would otherwise
   schedule the mover onto that same node and overwrite live PGDATA
   (`postmaster.pid` then contains the source PID). Replication does not
-  copy new bytes once that pod is Running. Cutover is cold Replicate into
-  an empty dest PVC, then Restore.
+  copy new bytes once that pod is Running, and Cutover refuses to promote
+  from a paused dest. Cutover is cold Replicate into an empty dest PVC,
+  then Restore.
   A source PVC that is gone drops its ReplicationSource and
   ReplicationDestination. Leftover pairs whose workload left the inventory
   are pruned on the next Replicate reconcile.
@@ -72,7 +73,9 @@ Action is logged as Pending before its status write. Failure backoff caps at
 30s. A ClusterPair with dest
 kubeconfig/cloud auth **must** resolve dest; Portage will not write
 ReplicationDestination on the source cluster. Restic movers copy the workload
-`fsGroup`/`runAsUser` into `moverSecurityContext` on source. Dest restic
+`runAsUser` and any non-zero `fsGroup` (always with
+`fsGroupChangePolicy: OnRootMismatch`) into `moverSecurityContext` on
+source. `fsGroup: 0` is not copied, because root movers do not need it. Dest restic
 sets `runAsUser` only. Dest pods drop `fsGroup: 0` (Postgres drops any
 `fsGroup`) so kubelet does not chmod PGDATA `g+rw` when the app mounts.
 Workloads that declare neither (or only `fsGroup: 0`) get
@@ -93,15 +96,55 @@ Install VolSync on both clusters (Helm subchart `volsync.enabled=true`, or
 ## Cutover
 
 ```
-Freeze source (replicas=0, remember original)
-  → lag=0
-  → promote dest (pg_promote / scale up)
-  → traffic webhook POST { action: switch }
-  → dest Ready + probe
+Preflight (source Postgres must survive a restart; nothing frozen yet)
+  → freeze source (replicas=0, remember original)        ┐
+  → lag=0 (post-freeze sync landed on dest)              │ freezeTimeout
+  → promote dest (pg_promote / scale up)                 │ (default 30m)
+  → traffic webhook POST { action: switch }              ┘
+  → every inventory workload Ready on dest + class probe   readyTimeout (default 15m)
   → Succeeded
 ```
 
-Failback:
+**lag=0** means:
+
+- Postgres streaming standby: `pg_is_in_recovery()` and no received WAL
+  left to replay. A dest that is not a standby (a restored primary) is not
+  "lag 0". It falls through to the VolSync check.
+- VolSync: source and dest `lastSyncTime` are both after the freeze. With
+  restic, dest is also not behind source. A ReplicationDestination with
+  `spec.paused` (Replicate pauses it while a running dest pod mounts the
+  PVC) cannot catch up. The Cutover aborts before promote and unfreezes
+  source, with the reason in status. Scale the dest workload to 0, or cut
+  over into a dest that has never run a pod, and retry.
+
+**Source restart preflight.** Cutover restarts the source (freeze, then
+unfreeze on rollback or abort). For each source Postgres that sets
+`fsGroup`, preflight execs into the running pod and refuses unless all of
+these hold:
+
+- `fsGroupChangePolicy: OnRootMismatch`. `Always`, the default, rewrites
+  the whole volume on every mount.
+- The data volume root has gid = `fsGroup`, `g+rwx`, and setgid, so
+  kubelet skips the rewrite. This is not checked for `subPath` mounts,
+  where the root is not visible.
+- `server.key` has no group or world access (`0600`, or `0640` if owned
+  by root), or `ssl` is off.
+
+The message names the failing rule. A typical repair is `chmod 600` on the
+key.
+
+**Timeouts.** `Action.spec.freezeTimeout` covers freeze through switch.
+On expiry the Action fails and source replicas are restored: traffic never
+moved. `Policy.spec.cutover.readyTimeout` covers `WaitingReady`. On expiry
+the Action fails naming the blocking workload. Traffic stays on dest and
+source stays frozen, because dest may already have taken writes. Decide,
+then fail back with `spec.rollback`.
+
+Stateless workloads are not frozen. They must be Ready on dest (deployed
+by GitOps or Restore) for the Cutover to succeed.
+
+Failback, either patched onto the existing Action (any phase, including
+`Succeeded` and `Failed`) or set on a new one:
 
 ```yaml
 spec:
@@ -110,7 +153,10 @@ spec:
   rollback: true
 ```
 
-Unfreezes source and POSTs `{ action: rollback }`.
+POSTs `{ action: rollback }`, then restores the source replica counts the
+freeze recorded. Workloads that were never frozen are not touched. If
+traffic may already be on dest and the hook fails, source stays frozen
+(two writable primaries is worse) and the rollback retries every 10s.
 
 Traffic hook is an HTTP webhook (`Policy.spec.cutover.trafficHook`). PipeOps
 router/DNS is an out-of-tree implementation of `pkg/traffic.Hook`.

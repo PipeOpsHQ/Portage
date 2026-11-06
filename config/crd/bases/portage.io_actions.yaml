@@ -62,7 +62,10 @@ spec:
                 description: DryRun runs preflight and classification only.
                 type: boolean
               freezeTimeout:
-                description: FreezeTimeout bounds source write-pause during Restore/Cutover.
+                description: |-
+                  FreezeTimeout bounds source write-pause during Restore/Cutover (Go
+                  duration). For Cutover it covers Quiescing through Switching (default
+                  30m); on expiry the Action fails and source replicas are restored.
                 type: string
               policyRef:
                 description: PolicyRef is the namespaced Policy this action executes.

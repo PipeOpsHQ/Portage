@@ -4,6 +4,12 @@
 
 ### Added
 
+- `Policy.spec.cutover.readyTimeout` (default `15m`) bounds Cutover
+  `WaitingReady` after the traffic switch. `Action.spec.freezeTimeout`
+  (default `30m`) now bounds Cutover `Quiescing` through `Switching`. An
+  expired freeze fails the Action and restores source replicas. Freeze and
+  switch times are recorded as `SourceFrozen` / `TrafficSwitched`
+  conditions.
 - `Policy.spec.clusterObjects.excludeGVKs` skips matching CRDs and CRs
   (Gateway API experimental channel, dest admission, version skew).
 
@@ -19,6 +25,45 @@
 
 ### Fixed
 
+- Cutover lag=0 could be false and promote stale data (v0.2.16 drill).
+  The Postgres check ran on a restored primary, got NULL replay time, and
+  read it as `0`. It now uses WAL receive/replay LSNs and only applies to
+  a server in recovery. The VolSync check only required that both sides had
+  ever synced. Cutover now requires a source and dest sync after the
+  freeze, dest not behind source (restic), and the ReplicationDestination
+  not paused. A paused dest (a running dest pod mounts the PVC) aborts the
+  Cutover before promote and unfreezes source. The reason is shown in
+  Action status.
+- A Cutover whose Policy contains a Stateless workload never left
+  `WaitingReady`. Readiness only covered stateful workloads. Every
+  inventory workload is now checked on dest, and the blocking workload's
+  reason is shown in the message.
+- `spec.rollback: true` patched onto a running Cutover is handled at the
+  start of the next pass, before any exec, probe, or object sync. Each of
+  those calls now has a 30s deadline (2m for the cluster-object sync). An
+  unbounded exec could pin the worker before it reached the rollback
+  branch. Rollback on a `Succeeded` or `Failed` Cutover (the documented
+  failback) was dropped at the top of Reconcile and now runs. If traffic
+  may be on dest and the rollback hook fails, source stays frozen and the
+  rollback retries.
+- Rollback restores only workloads that the freeze annotated, and clears
+  the annotation. It used to scale a never-frozen source to 1 replica.
+- Cutover dry-run no longer scales source to 0.
+- Source restic movers no longer set `fsGroup: 0`, and a non-zero
+  `fsGroup` is now sent with `fsGroupChangePolicy: OnRootMismatch`. The
+  mover pod used to default to `Always`, so every scheduled sync
+  recursively added group read/write to the live source PVC. That broke
+  source Postgres `server.key` even when the app's own pods used
+  `OnRootMismatch`. `fsGroup: 0` workloads still get root movers through
+  the privileged-movers annotation.
+- Cutover preflight checks, before anything is frozen, that a source
+  Postgres with `fsGroup` survives the freeze restart. `fsGroup` itself is
+  allowed (marketplace uses it for tenant isolation). Preflight refuses
+  when `fsGroupChangePolicy` is not `OnRootMismatch`, when the data volume
+  root would not let `OnRootMismatch` skip (gid, `g+rwx`, setgid), or when
+  `server.key` already has group or world access. Kubelet re-applying
+  group-read to the key is what crash-looped the source after each freeze
+  cycle.
 - Replicate prune treats a missing VolSync API as nothing to delete. A
   cluster without the ReplicationSource CRD used to log that 404 on every
   reconcile (`the server could not find the requested resource`).

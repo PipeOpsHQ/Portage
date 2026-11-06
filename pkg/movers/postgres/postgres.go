@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	portagev1alpha1 "github.com/PipeOpsHQ/portage/api/v1alpha1"
@@ -37,8 +38,19 @@ import (
 // PromoteCmd is executed on the destination primary-to-be.
 var PromoteCmd = []string{"/bin/sh", "-c", `if command -v psql >/dev/null; then psql -U postgres -c "SELECT pg_promote();"; else pg_ctl promote; fi`}
 
-// ReplicaLagCmd prints replay lag in seconds (0 = caught up).
-var ReplicaLagCmd = []string{"/bin/sh", "-c", `psql -U postgres -tAc "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int, 0);"`}
+// ReplicaLagCmd prints the WAL bytes a standby has received but not yet
+// replayed. It prints -1 when the server is not in recovery (a primary has
+// no replica lag, and treating that as 0 promoted stale data in the v0.2.16
+// cutover drill) and -2 when the standby has no streamed WAL to compare.
+// A time-based lag does not work here: once the source is frozen nothing
+// commits, so now() - pg_last_xact_replay_timestamp() only grows.
+var ReplicaLagCmd = []string{"/bin/sh", "-c", `psql -U postgres -tAc "SELECT CASE WHEN NOT pg_is_in_recovery() THEN -1 WHEN pg_last_wal_receive_lsn() IS NULL THEN -2 ELSE GREATEST(pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()), 0)::bigint END;"`}
+
+// Replay lag sentinels printed by ReplicaLagCmd.
+const (
+	lagNotStandby = -1
+	lagUnknown    = -2
+)
 
 // Mover uses in-pod psql/pg_ctl. VolSync is the fallback for generic PVCs.
 type Mover struct {
@@ -181,8 +193,10 @@ func (m Mover) Probe(ctx context.Context, w classify.Workload, _ movers.ClusterH
 	return movers.ProbeResult{OK: true, Message: "basebackup complete; standby configured"}, nil
 }
 
-// LagSeconds execs ReplicaLagCmd on the dest standby. Missing execer → unknown (not zero).
-func (m Mover) LagSeconds(ctx context.Context, w classify.Workload) (int, bool, error) {
+// ReplayLag execs ReplicaLagCmd on the dest pod. standby is false when the
+// dest is not a streaming standby (or there is no execer), so the caller
+// must use another lag source. It is never reported as zero lag.
+func (m Mover) ReplayLag(ctx context.Context, w classify.Workload) (lagBytes int64, standby bool, err error) {
 	kube := m.destKube()
 	if m.Exec == nil || kube == nil {
 		return 0, false, nil
@@ -195,7 +209,21 @@ func (m Mover) LagSeconds(ctx context.Context, w classify.Workload) (int, bool, 
 	if err != nil {
 		return 0, false, err
 	}
-	n := 0
-	fmt.Sscanf(strings.TrimSpace(res.Stdout), "%d", &n)
+	return parseReplayLag(res.Stdout)
+}
+
+func parseReplayLag(out string) (int64, bool, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("replica lag: unparseable output %q", strings.TrimSpace(out))
+	}
+	switch {
+	case n == lagNotStandby:
+		return 0, false, nil
+	case n == lagUnknown:
+		return 0, true, fmt.Errorf("replica lag: standby has no streamed WAL")
+	case n < 0:
+		return 0, false, fmt.Errorf("replica lag: unexpected value %d", n)
+	}
 	return n, true, nil
 }

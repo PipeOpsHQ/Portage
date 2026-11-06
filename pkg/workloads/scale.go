@@ -105,3 +105,38 @@ func OriginalReplicas(ann map[string]string) int32 {
 	}
 	return int32(n)
 }
+
+// Unfreeze restores the replica count Scale remembered and drops the
+// annotation, so the next freeze records the count at that time. A workload
+// without the annotation was never frozen and is left alone (the old
+// rollback path defaulted it to 1, scaling a 3-replica source down).
+func Unfreeze(ctx context.Context, kube kubernetes.Interface, w classify.Workload) (bool, error) {
+	switch w.Kind {
+	case "StatefulSet":
+		sts, err := kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if _, ok := sts.Annotations[originalReplicasAnn]; !ok {
+			return false, nil
+		}
+		sts.Spec.Replicas = ptr.To(OriginalReplicas(sts.Annotations))
+		delete(sts.Annotations, originalReplicasAnn)
+		_, err = kube.AppsV1().StatefulSets(w.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
+		return err == nil, err
+	case "Deployment":
+		dep, err := kube.AppsV1().Deployments(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if _, ok := dep.Annotations[originalReplicasAnn]; !ok {
+			return false, nil
+		}
+		dep.Spec.Replicas = ptr.To(OriginalReplicas(dep.Annotations))
+		delete(dep.Annotations, originalReplicasAnn)
+		_, err = kube.AppsV1().Deployments(w.Namespace).Update(ctx, dep, metav1.UpdateOptions{})
+		return err == nil, err
+	default:
+		return false, fmt.Errorf("unfreeze: unsupported kind %s", w.Kind)
+	}
+}
