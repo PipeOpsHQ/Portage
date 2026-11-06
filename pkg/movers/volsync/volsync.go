@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -510,16 +511,27 @@ func (m Mover) destResticSpec(w classify.Workload) map[string]any {
 	return spec
 }
 
+// moverSecurityContext is the source-side restic mover pod context.
+//
+// fsGroup 0 is dropped: it grants nothing a root mover lacks, and those
+// workloads get root movers through the privileged-movers annotation.
+// A non-zero fsGroup is kept (some images need it to read their data) but
+// always with fsGroupChangePolicy OnRootMismatch. Without a policy the
+// mover pod defaults to Always, so every scheduled sync recursively ORs
+// 0660 onto the live source PVC. That broke source Postgres server.key
+// even when the app's own pods use OnRootMismatch (v0.2.16 drill, and the
+// same mechanism as the July K8up backup incident).
 func moverSecurityContext(w classify.Workload) map[string]any {
-	if w.FSGroup == nil && w.RunAsUser == nil {
-		return nil
-	}
 	sc := map[string]any{}
-	if w.FSGroup != nil {
+	if w.FSGroup != nil && *w.FSGroup != 0 {
 		sc["fsGroup"] = *w.FSGroup
+		sc["fsGroupChangePolicy"] = string(corev1.FSGroupChangeOnRootMismatch)
 	}
 	if w.RunAsUser != nil {
 		sc["runAsUser"] = *w.RunAsUser
+	}
+	if len(sc) == 0 {
+		return nil
 	}
 	return sc
 }

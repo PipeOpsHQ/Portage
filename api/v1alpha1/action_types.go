@@ -59,7 +59,9 @@ type ActionSpec struct {
 	// PolicyRef is the namespaced Policy this action executes.
 	PolicyRef string `json:"policyRef"`
 
-	// FreezeTimeout bounds source write-pause during Restore/Cutover.
+	// FreezeTimeout bounds source write-pause during Restore/Cutover (Go
+	// duration). For Cutover it covers Quiescing through Switching (default
+	// 30m); on expiry the Action fails and source replicas are restored.
 	// +optional
 	FreezeTimeout string `json:"freezeTimeout,omitempty"`
 

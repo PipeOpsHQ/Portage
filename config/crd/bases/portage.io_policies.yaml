@@ -131,6 +131,12 @@ spec:
                     description: HoldSource is how long to keep the source frozen-but-present
                       for rollback.
                     type: string
+                  readyTimeout:
+                    description: |-
+                      ReadyTimeout bounds WaitingReady after the traffic switch (Go duration,
+                      default 15m). On timeout the Action fails with the blocking workload;
+                      traffic stays on dest and source stays frozen until spec.rollback.
+                    type: string
                   trafficHook:
                     description: |-
                       TrafficHook names how to switch ingress/DNS. Empty means no traffic move

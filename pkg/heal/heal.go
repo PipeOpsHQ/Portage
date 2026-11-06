@@ -122,6 +122,14 @@ func stripVolumeFSGroup(spec *corev1.PodSpec) bool {
 	return true
 }
 
+// PostgresFSGroup reports whether spec is a Postgres pod with fsGroup set.
+// Kubelet may then OR group-read onto server.key at mount, and Postgres
+// refuses to start ("has group or world access"). Cutover preflight uses it
+// to decide which source pods need the restart-safety check.
+func PostgresFSGroup(spec *corev1.PodSpec) bool {
+	return spec != nil && spec.SecurityContext != nil && spec.SecurityContext.FSGroup != nil && postgresPod(spec)
+}
+
 func postgresPod(spec *corev1.PodSpec) bool {
 	if spec == nil {
 		return false

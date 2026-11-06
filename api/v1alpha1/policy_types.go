@@ -136,6 +136,12 @@ type CutoverSpec struct {
 	// HoldSource is how long to keep the source frozen-but-present for rollback.
 	// +optional
 	HoldSource string `json:"holdSource,omitempty"`
+
+	// ReadyTimeout bounds WaitingReady after the traffic switch (Go duration,
+	// default 15m). On timeout the Action fails with the blocking workload;
+	// traffic stays on dest and source stays frozen until spec.rollback.
+	// +optional
+	ReadyTimeout string `json:"readyTimeout,omitempty"`
 }
 
 // RendererSpec chooses dest manifest production.

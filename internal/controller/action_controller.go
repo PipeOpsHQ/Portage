@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -158,15 +160,22 @@ func (r *ActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	switch act.Status.Phase {
-	case portagev1alpha1.ActionPhaseSucceeded:
+	// spec.rollback on a finished Cutover is the documented failback. It
+	// used to be dropped here for Succeeded and Failed Actions.
+	cutoverRollback := act.Spec.Type == portagev1alpha1.ActionCutover && act.Spec.Rollback &&
+		(act.Status.Phase == portagev1alpha1.ActionPhaseSucceeded || act.Status.Phase == portagev1alpha1.ActionPhaseFailed)
+	switch {
+	case cutoverRollback:
+		logger.Info("rollback requested on finished cutover", "phase", act.Status.Phase)
+		act.Status.CompletionTime = nil
+	case act.Status.Phase == portagev1alpha1.ActionPhaseSucceeded:
 		// Replicate is a live loop: dest must keep tracking source.
 		if act.Spec.Type != portagev1alpha1.ActionReplicate || act.Spec.DryRun {
 			return ctrl.Result{}, nil
 		}
-	case portagev1alpha1.ActionPhaseRolledBack:
+	case act.Status.Phase == portagev1alpha1.ActionPhaseRolledBack:
 		return ctrl.Result{}, nil
-	case portagev1alpha1.ActionPhaseFailed:
+	case act.Status.Phase == portagev1alpha1.ActionPhaseFailed:
 		// A dest apply failure used to set Failed and stop. The namespace
 		// (or admission) can appear later. Resume only that class of Restore.
 		// Preflight, a missing Policy, and an unsupported type stay terminal.
@@ -822,116 +831,404 @@ func replicateRequeue(pol *portagev1alpha1.Policy) time.Duration {
 	return d
 }
 
+// cutoverCallTimeout bounds each exec, probe, and per-workload API call in a
+// Cutover pass. The reconcile ctx has no deadline, and one hung psql exec
+// pinned the worker for that Action. A pinned worker never reaches the
+// rollback branch, so a patched spec.rollback looked ignored (drill Bug 3).
+const cutoverCallTimeout = 30 * time.Second
+
+// cutoverObjectSyncTimeout bounds the live cluster-object sync (many calls).
+const cutoverObjectSyncTimeout = 2 * time.Minute
+
 func (r *ActionReconciler) runCutover(ctx context.Context, act *portagev1alpha1.Action, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (restore.Result, error) {
-	facts := cutover.Facts{
-		Inventory: inv.Workloads,
-		Ready:     map[string]bool{},
-		Probes:    map[string]movers.ProbeResult{},
-		DryRun:    act.Spec.DryRun,
-		Rollback:  act.Spec.Rollback,
-		Now:       r.now(),
+	logger := log.FromContext(ctx)
+	phase := act.Status.Phase
+	now := r.now()
+	ev := traffic.Event{Policy: pol.Name, Source: "source", Destination: "dest"}
+	if pair != nil {
+		ev.Source, ev.Destination = pair.Spec.Source.Name, pair.Spec.Destination.Name
 	}
-	reg := r.registry(ctx, pair, ep)
-	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
-	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, DestDynamic: ep.Dest.Dynamic, Transport: transportOf(pair), DestPath: destPath(pair)}
-
-	frozen, lagZero, promoted := true, true, true
-	for _, w := range inv.Stateful() {
-		if clusterobjects.Is(w) {
-			ok, msg, err := r.syncClusterObjectsLive(ctx, pol, pair, ep)
-			if err != nil {
-				facts.Ready[w.Key()] = false
-				facts.Probes[w.Key()] = movers.ProbeResult{OK: false, Message: err.Error()}
-				continue
-			}
-			facts.Ready[w.Key()] = ok
-			facts.Probes[w.Key()] = movers.ProbeResult{OK: ok, Message: msg}
-			continue
-		}
-		switch act.Status.Phase {
-		case "", portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight, portagev1alpha1.ActionPhaseQuiescing:
-			_ = workloads.Scale(ctx, ep.Source.Kube, w, 0)
-		}
-		if n, ok, err := pg.LagSeconds(ctx, w); err == nil && ok {
-			if n > 0 {
-				lagZero = false
-			}
-		} else if ok, err := vs.LagZero(ctx, w); err == nil && !ok {
-			lagZero = false
-		}
-		if act.Status.Phase == portagev1alpha1.ActionPhasePromoting {
-			m, cap, _ := reg.Select(ctx, w, moverOverride(pol, w, "replicate"))
-			if m != nil && cap.Replicate {
-				if err := m.Promote(ctx, w, movers.ClusterHandle{Name: "dest"}); err != nil {
-					promoted = false
-				}
-			} else if w.Engine == "postgres" || w.Engine == "timescale" {
-				if err := pg.Promote(ctx, w, movers.ClusterHandle{Name: "dest"}); err != nil {
-					promoted = false
-				}
-			} else {
-				_ = workloads.Scale(ctx, ep.Dest.Kube, w, 1)
-			}
-		}
-		if act.Status.Phase == portagev1alpha1.ActionPhaseWaitingReady || act.Status.Phase == portagev1alpha1.ActionPhaseSwitching {
-			_ = workloads.Scale(ctx, ep.Dest.Kube, w, 1)
-		}
-		ready, _ := workloads.Ready(ctx, ep.Dest.Kube, w)
-		facts.Ready[w.Key()] = ready
-		if ready && ep.Dest.Exec != nil {
-			facts.Probes[w.Key()] = probe.Run(ctx, ep.Dest.Kube, ep.Dest.Exec, w)
-		}
-	}
-	if act.Status.Phase == portagev1alpha1.ActionPhaseQuiescing {
-		frozen = true
-		for _, w := range inv.Stateful() {
-			if clusterobjects.Is(w) {
-				continue
-			}
-			if !workloads.ScaledToZero(ctx, ep.Source.Kube, w) {
-				frozen = false
-			}
-		}
-	}
-	if act.Status.Phase == "" || act.Status.Phase == portagev1alpha1.ActionPhasePending || act.Status.Phase == portagev1alpha1.ActionPhasePreflight {
-		frozen, lagZero, promoted = false, false, false
-	}
-	facts.Frozen, facts.LagZero, facts.Promoted = frozen, lagZero, promoted
-
 	hook := traffic.Hook(traffic.Noop{})
 	if pol.Spec.Cutover.TrafficHook != "" {
 		hook = traffic.Webhook{URL: pol.Spec.Cutover.TrafficHook}
 	}
-	if act.Status.Phase == portagev1alpha1.ActionPhaseSwitching {
-		src, dst := "source", "dest"
-		if pair != nil {
-			src, dst = pair.Spec.Source.Name, pair.Spec.Destination.Name
+
+	// Rollback runs before anything else in the pass: no exec, probe, or
+	// cross-cluster sync can delay it.
+	if act.Spec.Rollback {
+		return r.rollbackCutover(ctx, act, ep, inv, hook, ev), nil
+	}
+
+	facts := cutover.Facts{
+		Inventory:     inv.Workloads,
+		DryRun:        act.Spec.DryRun,
+		Now:           now,
+		FrozenAt:      conditionTime(act.Status.Conditions, cutover.ConditionSourceFrozen),
+		SwitchedAt:    conditionTime(act.Status.Conditions, cutover.ConditionTrafficSwitched),
+		FreezeTimeout: parseDuration(act.Spec.FreezeTimeout),
+		ReadyTimeout:  parseDuration(pol.Spec.Cutover.ReadyTimeout),
+	}
+	if act.Status.StartTime != nil {
+		facts.StartedAt = act.Status.StartTime.Time
+	}
+	stateful := sourceStateful(inv)
+
+	switch phase {
+	case "", portagev1alpha1.ActionPhasePending, portagev1alpha1.ActionPhasePreflight:
+		facts.PreflightError = cutoverPreflight(ctx, ep.Source.Kube, ep.Source.Exec, stateful)
+		// Freeze only once preflight passed, and never on dry-run: nothing
+		// would unfreeze it.
+		if facts.PreflightError == "" && !act.Spec.DryRun {
+			for _, w := range stateful {
+				if err := scaleWithTimeout(ctx, ep.Source.Kube, w, 0); err != nil {
+					logger.Error(err, "freeze source", "workload", w.Key())
+				}
+			}
 		}
-		if err := hook.Switch(ctx, traffic.Event{Action: "switch", Policy: pol.Name, Source: src, Destination: dst}); err == nil {
+	case portagev1alpha1.ActionPhaseQuiescing:
+		facts.Frozen = true
+		for _, w := range stateful {
+			_ = scaleWithTimeout(ctx, ep.Source.Kube, w, 0)
+			cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+			if !workloads.ScaledToZero(cctx, ep.Source.Kube, w) {
+				facts.Frozen = false
+			}
+			cancel()
+		}
+	case portagev1alpha1.ActionPhaseCatchingUp:
+		facts.LagZero, facts.LagBlocked, facts.LagReason = r.cutoverLag(ctx, pair, ep, stateful, facts.FrozenAt)
+	case portagev1alpha1.ActionPhasePromoting:
+		facts.Promoted = r.promoteDest(ctx, pol, pair, ep, stateful)
+	case portagev1alpha1.ActionPhaseSwitching:
+		for _, w := range stateful {
+			_ = scaleWithTimeout(ctx, ep.Dest.Kube, w, 1)
+		}
+		ev.Action = "switch"
+		if err := hook.Switch(ctx, ev); err != nil {
+			logger.Error(err, "traffic switch")
+		} else {
 			facts.Switched = true
 		}
-	}
-	if act.Spec.Rollback {
-		src, dst := "source", "dest"
-		if pair != nil {
-			src, dst = pair.Spec.Source.Name, pair.Spec.Destination.Name
+	case portagev1alpha1.ActionPhaseWaitingReady, portagev1alpha1.ActionPhaseHealing, portagev1alpha1.ActionPhaseAttesting:
+		for _, w := range stateful {
+			_ = scaleWithTimeout(ctx, ep.Dest.Kube, w, 1)
 		}
-		_ = hook.Rollback(ctx, traffic.Event{Action: "rollback", Policy: pol.Name, Source: src, Destination: dst})
-		for _, w := range inv.Stateful() {
-			if clusterobjects.Is(w) {
-				continue
-			}
-			n := int32(1)
-			if sts, err := ep.Source.Kube.AppsV1().StatefulSets(w.Namespace).Get(ctx, w.Name, metav1.GetOptions{}); err == nil {
-				n = workloads.OriginalReplicas(sts.Annotations)
-			}
-			_ = workloads.Scale(ctx, ep.Source.Kube, w, n)
-		}
-		facts.Rolled = true
+		facts.Ready, facts.Probes, facts.Notes = r.destReadiness(ctx, pol, pair, ep, inv)
 	}
 
 	res := cutover.Advance(act.Status, facts)
+
+	switch {
+	case phase == portagev1alpha1.ActionPhaseQuiescing && res.Phase == portagev1alpha1.ActionPhaseCatchingUp:
+		setCondition(act, cutover.ConditionSourceFrozen, metav1.ConditionTrue, "ScaledToZero", "source stateful workloads at 0 replicas", now)
+	case phase == portagev1alpha1.ActionPhaseSwitching && res.Phase == portagev1alpha1.ActionPhaseWaitingReady:
+		setCondition(act, cutover.ConditionTrafficSwitched, metav1.ConditionTrue, "HookSucceeded", "traffic hook switch returned 2xx", now)
+	case res.Phase == portagev1alpha1.ActionPhaseFailed && cutover.UnfreezeOnFail(phase):
+		logger.Info("cutover aborted; unfreezing source", "phase", phase, "reason", res.Message)
+		if phase == portagev1alpha1.ActionPhaseSwitching {
+			// The switch hook may have partly applied before it failed.
+			ev.Action = "rollback"
+			if err := hook.Rollback(ctx, ev); err != nil {
+				logger.Error(err, "traffic rollback after aborted switch")
+			}
+		}
+		r.unfreezeSource(ctx, ep, stateful)
+		setCondition(act, cutover.ConditionSourceFrozen, metav1.ConditionFalse, "Aborted", "source replicas restored after abort", now)
+	}
 	return res, nil
+}
+
+// rollbackCutover fails back: traffic to source, then source unfrozen. If
+// traffic may be on dest and the hook fails, source stays frozen and the
+// pass requeues. Unfreezing then would leave two writable primaries.
+func (r *ActionReconciler) rollbackCutover(ctx context.Context, act *portagev1alpha1.Action, ep clusters.Pair, inv classify.Inventory, hook traffic.Hook, ev traffic.Event) restore.Result {
+	logger := log.FromContext(ctx)
+	phase := act.Status.Phase
+	logger.Info("cutover rollback requested", "phase", phase)
+	ev.Action = "rollback"
+	if err := hook.Rollback(ctx, ev); err != nil {
+		logger.Error(err, "traffic rollback")
+		if trafficMayBeOnDest(act) {
+			if phase == "" {
+				phase = portagev1alpha1.ActionPhasePending
+			}
+			return restore.Result{
+				Phase:        phase,
+				Message:      "rollback pending: traffic hook failed (" + err.Error() + "); source stays frozen until traffic is back on source",
+				Workloads:    act.Status.Workloads,
+				RequeueAfter: 10 * time.Second,
+			}
+		}
+	}
+	r.unfreezeSource(ctx, ep, sourceStateful(inv))
+	setCondition(act, cutover.ConditionSourceFrozen, metav1.ConditionFalse, "RolledBack", "source replicas restored", r.now())
+	return cutover.Advance(act.Status, cutover.Facts{Inventory: inv.Workloads, Rollback: true, Rolled: true, Now: r.now()})
+}
+
+// trafficMayBeOnDest is true once the switch hook has been called.
+func trafficMayBeOnDest(act *portagev1alpha1.Action) bool {
+	switch act.Status.Phase {
+	case portagev1alpha1.ActionPhaseSwitching, portagev1alpha1.ActionPhaseWaitingReady,
+		portagev1alpha1.ActionPhaseHealing, portagev1alpha1.ActionPhaseAttesting,
+		portagev1alpha1.ActionPhaseSucceeded:
+		return true
+	}
+	return !conditionTime(act.Status.Conditions, cutover.ConditionTrafficSwitched).IsZero()
+}
+
+// sourceStateful is what Cutover freezes: stateful workloads, excluding the
+// cluster-object pseudo-workload.
+func sourceStateful(inv classify.Inventory) []classify.Workload {
+	var out []classify.Workload
+	for _, w := range inv.Stateful() {
+		if !clusterobjects.Is(w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (r *ActionReconciler) unfreezeSource(ctx context.Context, ep clusters.Pair, stateful []classify.Workload) {
+	logger := log.FromContext(ctx)
+	for _, w := range stateful {
+		cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+		if _, err := workloads.Unfreeze(cctx, ep.Source.Kube, w); err != nil {
+			logger.Error(err, "unfreeze source", "workload", w.Key())
+		}
+		cancel()
+	}
+}
+
+// cutoverPreflight refuses a Cutover before the freeze when the freeze
+// restart would break the source. A Postgres pod with fsGroup crash-loops
+// if kubelet re-applies group-read to server.key on that mount (drill
+// Bug 4). fsGroup itself is allowed (marketplace uses it for tenant
+// isolation): with OnRootMismatch, a matching volume root, and a key that
+// is 0600 now, the restart is safe.
+func cutoverPreflight(ctx context.Context, kube kubernetes.Interface, execer kubeexec.Interface, stateful []classify.Workload) string {
+	if kube == nil {
+		return ""
+	}
+	var bad []string
+	for _, w := range stateful {
+		spec := sourcePodTemplate(ctx, kube, w)
+		if !heal.PostgresFSGroup(spec) {
+			continue
+		}
+		if risk := postgresRestartRisk(ctx, kube, execer, w, spec.SecurityContext); risk != "" {
+			bad = append(bad, w.Key()+": "+risk)
+		}
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	return "source Postgres would not survive the freeze restart: " + strings.Join(bad, "; ")
+}
+
+func sourcePodTemplate(ctx context.Context, kube kubernetes.Interface, w classify.Workload) *corev1.PodSpec {
+	cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+	defer cancel()
+	switch w.Kind {
+	case "StatefulSet":
+		if sts, err := kube.AppsV1().StatefulSets(w.Namespace).Get(cctx, w.Name, metav1.GetOptions{}); err == nil {
+			return &sts.Spec.Template.Spec
+		}
+	case "Deployment":
+		if dep, err := kube.AppsV1().Deployments(w.Namespace).Get(cctx, w.Name, metav1.GetOptions{}); err == nil {
+			return &dep.Spec.Template.Spec
+		}
+	}
+	return nil
+}
+
+func postgresRestartRisk(ctx context.Context, kube kubernetes.Interface, execer kubeexec.Interface, w classify.Workload, sc *corev1.PodSecurityContext) string {
+	if risk := cutover.PolicyRisk(sc); risk != "" {
+		return risk
+	}
+	if execer == nil {
+		return "cannot verify server.key and volume root permissions: no exec client for the source cluster"
+	}
+	cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+	defer cancel()
+	pod, container, err := workloads.FirstReadyPod(cctx, kube, w)
+	if err != nil {
+		return "cannot verify server.key: no Ready source pod: " + err.Error()
+	}
+	mount, subPath := dataMount(pod, container)
+	res, err := execer.Exec(cctx, w.Namespace, pod.Name, container, cutover.PostgresRestartCheckCmd(mount))
+	if err != nil {
+		return "cannot verify server.key: " + err.Error() + " " + strings.TrimSpace(res.Stderr)
+	}
+	return cutover.RestartRisk(res.Stdout, *sc.FSGroup, mount != "" && !subPath)
+}
+
+// dataMount is the container's first PVC mount. subPath is true when the
+// mount is a subdirectory, so the volume root is not visible to stat.
+func dataMount(pod *corev1.Pod, container string) (string, bool) {
+	pvcVolumes := map[string]bool{}
+	for _, v := range pod.Spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			pvcVolumes[v.Name] = true
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		if container != "" && c.Name != container {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			if pvcVolumes[m.Name] {
+				return m.MountPath, m.SubPath != "" || m.SubPathExpr != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// cutoverLag aggregates per-workload lag. A Postgres streaming standby is
+// checked by WAL replay; anything else (including a restored primary) by
+// its VolSync pair against the freeze time.
+func (r *ActionReconciler) cutoverLag(ctx context.Context, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, stateful []classify.Workload, frozenAt time.Time) (zero, blocked bool, reason string) {
+	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
+	vs := volsync.Mover{Dynamic: ep.Source.Dynamic, DestDynamic: ep.Dest.Dynamic, Kube: ep.Source.Kube, DestKube: ep.Dest.Kube, Transport: transportOf(pair), DestPath: destPath(pair)}
+	zero = true
+	note := func(key, msg string) {
+		zero = false
+		if reason == "" {
+			reason = key + ": " + msg
+		}
+	}
+	for _, w := range stateful {
+		if w.Engine == "postgres" || w.Engine == "timescale" {
+			cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+			n, standby, err := pg.ReplayLag(cctx, w)
+			cancel()
+			if standby {
+				switch {
+				case err != nil:
+					note(w.Key(), err.Error())
+				case n > 0:
+					note(w.Key(), fmt.Sprintf("standby has %d WAL bytes left to replay", n))
+				}
+				continue
+			}
+		}
+		cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+		lag, err := vs.CutoverLag(cctx, w, frozenAt)
+		cancel()
+		switch {
+		case err != nil:
+			note(w.Key(), err.Error())
+		case lag.Blocked:
+			blocked = true
+			zero = false
+			reason = w.Key() + ": " + lag.Reason
+			return zero, blocked, reason
+		case !lag.Zero:
+			note(w.Key(), lag.Reason)
+		}
+	}
+	return zero, blocked, reason
+}
+
+func (r *ActionReconciler) promoteDest(ctx context.Context, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, stateful []classify.Workload) bool {
+	logger := log.FromContext(ctx)
+	reg := r.registry(ctx, pair, ep)
+	pg := pgmover.Mover{Kube: ep.Source.Kube, Dest: ep.Dest.Kube, Exec: ep.Dest.Exec}
+	promoted := true
+	for _, w := range stateful {
+		cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+		var err error
+		m, cap, _ := reg.Select(cctx, w, moverOverride(pol, w, "replicate"))
+		switch {
+		case m != nil && cap.Replicate:
+			err = m.Promote(cctx, w, movers.ClusterHandle{Name: "dest"})
+		case w.Engine == "postgres" || w.Engine == "timescale":
+			err = pg.Promote(cctx, w, movers.ClusterHandle{Name: "dest"})
+		default:
+			_ = workloads.Scale(cctx, ep.Dest.Kube, w, 1)
+		}
+		cancel()
+		if err != nil {
+			logger.Error(err, "promote dest", "workload", w.Key())
+			promoted = false
+		}
+	}
+	return promoted
+}
+
+// destReadiness evaluates every workload in the inventory on dest. It used
+// to walk only inv.Stateful(), so a Stateless Deployment never got a Ready
+// entry and WaitingReady waited forever (drill Bug 2).
+func (r *ActionReconciler) destReadiness(ctx context.Context, pol *portagev1alpha1.Policy, pair *portagev1alpha1.ClusterPair, ep clusters.Pair, inv classify.Inventory) (map[string]bool, map[string]movers.ProbeResult, map[string]string) {
+	ready := map[string]bool{}
+	probes := map[string]movers.ProbeResult{}
+	notes := map[string]string{}
+	for _, w := range inv.Workloads {
+		key := w.Key()
+		switch {
+		case clusterobjects.Is(w):
+			cctx, cancel := context.WithTimeout(ctx, cutoverObjectSyncTimeout)
+			ok, msg, err := r.syncClusterObjectsLive(cctx, pol, pair, ep)
+			cancel()
+			if err != nil {
+				ok, msg = false, err.Error()
+			}
+			ready[key], probes[key], notes[key] = ok, movers.ProbeResult{OK: ok, Message: msg}, msg
+		case w.Class == portagev1alpha1.ClassStateless:
+			cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+			st := destStatelessStatus(cctx, ep.Dest.Kube, w)
+			cancel()
+			ready[key], notes[key] = st.Ready, st.Message
+		default:
+			cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+			ok, err := workloads.Ready(cctx, ep.Dest.Kube, w)
+			if err != nil {
+				notes[key] = err.Error()
+			}
+			ready[key] = ok
+			if ok && ep.Dest.Exec != nil {
+				probes[key] = probe.Run(cctx, ep.Dest.Kube, ep.Dest.Exec, w)
+			}
+			cancel()
+		}
+	}
+	return ready, probes, notes
+}
+
+func scaleWithTimeout(ctx context.Context, kube kubernetes.Interface, w classify.Workload, n int32) error {
+	if kube == nil {
+		return fmt.Errorf("scale %s: no client", w.Key())
+	}
+	cctx, cancel := context.WithTimeout(ctx, cutoverCallTimeout)
+	defer cancel()
+	return workloads.Scale(cctx, kube, w, n)
+}
+
+func conditionTime(conds []metav1.Condition, t string) time.Time {
+	c := meta.FindStatusCondition(conds, t)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		return time.Time{}
+	}
+	return c.LastTransitionTime.Time
+}
+
+func setCondition(act *portagev1alpha1.Action, t string, status metav1.ConditionStatus, reason, msg string, now time.Time) {
+	meta.SetStatusCondition(&act.Status.Conditions, metav1.Condition{
+		Type: t, Status: status, Reason: reason, Message: msg,
+		ObservedGeneration: act.Generation, LastTransitionTime: metav1.NewTime(now),
+	})
+}
+
+// parseDuration returns 0 (use the default) for empty or invalid input.
+func parseDuration(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0
+	}
+	return d
 }
 
 func (r *ActionReconciler) healWorkloadOn(ctx context.Context, kube kubernetes.Interface, w classify.Workload, opt transform.Options, acc map[string][]string) {

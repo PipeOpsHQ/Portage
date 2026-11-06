@@ -275,6 +275,12 @@ func TestResticMoverSecurityContextFromWorkload(t *testing.T) {
 	if g != 999 {
 		t.Fatalf("fsGroup=%d", g)
 	}
+	// Without a policy the mover defaults to Always and rewrites the live
+	// source PVC on every sync.
+	pol, _, _ := unstructured.NestedString(src.Object, "spec", "restic", "moverSecurityContext", "fsGroupChangePolicy")
+	if pol != "OnRootMismatch" {
+		t.Fatalf("fsGroupChangePolicy=%q want OnRootMismatch", pol)
+	}
 }
 
 func TestDestResticOmitsRootFSGroup(t *testing.T) {
@@ -305,9 +311,10 @@ func TestDestResticOmitsRootFSGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sg, _, _ := unstructured.NestedInt64(src.Object, "spec", "restic", "moverSecurityContext", "fsGroup")
-	if sg != 0 {
-		t.Fatalf("source may keep declared fsGroup 0, got %d", sg)
+	// fsGroup 0 on the source mover gives root nothing extra and made
+	// kubelet chmod the live source PVC on every sync.
+	if _, found, _ := unstructured.NestedFieldNoCopy(src.Object, "spec", "restic", "moverSecurityContext", "fsGroup"); found {
+		t.Fatal("source restic must not set fsGroup 0")
 	}
 }
 
